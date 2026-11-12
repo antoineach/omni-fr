@@ -56,6 +56,8 @@ def bench_preset(name: str, codebooks: int | None, context: int, n: int, int8: b
     if codebooks:
         cfg = cfg.with_codebooks(codebooks)
     model = OmniStudent(cfg).eval()
+    # le cache ne doit pas dépasser la table RoPE du préréglage (512 pour « tiny »)
+    context = min(context, cfg.backbone.max_len - n - 10)
     params = count_params(model)
     if int8:
         model = _quantize(model)
