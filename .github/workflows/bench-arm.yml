@@ -1,8 +1,10 @@
 # Banc de vitesse sur matériel ARM, sans rien acheter.
-#   - macos-14 : runner GitHub sur Apple M1 (gratuit pour les dépôts publics)
+#   - macos-15 : runner GitHub Apple Silicon (gratuit pour les dépôts publics).
+#     L'image macos-14 a été retirée le 2 novembre 2026.
 #   - ubuntu-24.04-arm : runner Linux arm64 (gratuit pour les dépôts publics)
 # Lancer à la main : onglet Actions > bench-arm > Run workflow.
 # Les runners sont partagés : répéter 3 fois et garder la médiane avant de conclure.
+# Résultats : dans le journal de chaque étape et dans l'artefact bench-<os>.
 
 name: bench-arm
 
@@ -18,27 +20,36 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, ubuntu-24.04-arm]
+        os: [macos-15, ubuntu-24.04-arm]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Processeur
+        run: |
+          python -c "import platform, os; print(platform.platform(), platform.machine(), os.cpu_count(), 'coeurs')"
+          (lscpu 2>/dev/null | grep -E 'Model name|^CPU\(s\)') || sysctl -n machdep.cpu.brand_string hw.ncpu
       - name: Dépendances
         run: pip install -r requirements.txt
       - name: Tests
         run: python -m pytest -q
-      - name: Banc float32
+      - name: Banc float32 (tiny = plancher de surcoût Python)
         run: python -m bench.bench_step --preset all --codebooks 8 --threads ${{ inputs.threads }} --n 40 --json bench-${{ matrix.os }}-fp32.json
-      - name: Banc int8
+      - name: Banc int8 dynamique
         run: python -m bench.bench_step --preset all --codebooks 8 --threads ${{ inputs.threads }} --n 40 --int8 --json bench-${{ matrix.os }}-int8.json
-      - name: Banc du décodeur du codec (vrai checkpoint Qwen)
+      - name: Décodeur du codec Qwen (vrai checkpoint)
         continue-on-error: true
         run: |
           pip install qwen-tts==0.1.1 accelerate==1.12.0 librosa einops sox torchaudio onnxruntime
-          python -m bench.bench_codec --threads ${{ inputs.threads }} --chunk 4 --json bench-${{ matrix.os }}-codec4.json
-          python -m bench.bench_codec --threads ${{ inputs.threads }} --chunk 12 --json bench-${{ matrix.os }}-codec12.json
+          python -m bench.bench_codec --codec qwen --threads ${{ inputs.threads }} --chunk 4 --json bench-${{ matrix.os }}-qwen4.json
+          python -m bench.bench_codec --codec qwen --threads ${{ inputs.threads }} --chunk 12 --json bench-${{ matrix.os }}-qwen12.json
+      - name: Décodeur du codec Mimi (vrai checkpoint, 8 codebooks)
+        continue-on-error: true
+        run: |
+          python -m bench.bench_codec --codec mimi --threads ${{ inputs.threads }} --chunk 4 --json bench-${{ matrix.os }}-mimi4.json
+          python -m bench.bench_codec --codec mimi --threads ${{ inputs.threads }} --chunk 12 --json bench-${{ matrix.os }}-mimi12.json
       - uses: actions/upload-artifact@v4
         with:
           name: bench-${{ matrix.os }}

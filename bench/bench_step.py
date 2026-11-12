@@ -116,7 +116,9 @@ def main() -> None:
     a = ap.parse_args()
 
     torch.set_num_threads(a.threads)
-    names = [p for p in PRESETS if p != "tiny"] if a.preset == "all" else [a.preset]
+    # « tiny » mesure le plancher de surcoût Python/PyTorch par trame (calcul quasi nul) :
+    # ce qu'un moteur compilé (C++, MLX, ONNX) supprimerait.
+    names = list(PRESETS) if a.preset == "all" else [a.preset]
     host = {"machine": platform.machine(), "processor": platform.processor(),
             "system": platform.platform(), "torch": torch.__version__}
     results = []
@@ -126,7 +128,8 @@ def main() -> None:
         print(f"{r['preset']:<26} K={r['codebooks']:<2} int8={r['int8']!s:<5} "
               f"total {r['ms_par_trame']['total en parole']:7.2f} ms/trame "
               f"= {100 * r['part_du_budget_80ms']:5.1f} % du temps réel  "
-              f"(p95 {r['p95_total_ms']} ms)")
+              f"(p95 {r['p95_total_ms']} ms)  "
+              + " ".join(f"{k}={v}" for k, v in r["ms_par_trame"].items() if k != "total en parole"))
     if a.json:
         with open(a.json, "w", encoding="utf-8") as f:
             json.dump({"hote": host, "resultats": results}, f, ensure_ascii=False, indent=2)
