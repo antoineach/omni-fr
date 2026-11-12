@@ -1,0 +1,59 @@
+# LFM3-Audio-2B dans llama.cpp compilé sur place, CPU seul (et Metal sur Mac en plus).
+# Lancer : onglet Actions > bench-lfm3 > Run workflow. Répéter 3 fois avant de conclure.
+
+name: bench-lfm3
+
+on:
+  workflow_dispatch:
+    inputs:
+      quant:
+        description: "Quantification du modèle principal"
+        default: "Q4_K_M"
+
+jobs:
+  bench:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04-arm
+            threads: 4
+            ngl: 0
+          - os: macos-15
+            threads: 3
+            ngl: 0
+          - os: macos-15
+            threads: 3
+            ngl: 99
+    runs-on: ${{ matrix.os }}
+    name: ${{ matrix.os }} ngl=${{ matrix.ngl }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Processeur
+        run: |
+          python -c "import platform, os; print(platform.platform(), os.cpu_count(), 'coeurs')"
+          (lscpu 2>/dev/null | grep -E 'Model name|Vendor|^CPU\(s\)|Flags' | cut -c1-200) || sysctl -n machdep.cpu.brand_string hw.ncpu
+      - name: Outils
+        run: |
+          pip install huggingface_hub
+          if [ "$RUNNER_OS" = "Linux" ]; then sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg libcurl4-openssl-dev; else brew install ffmpeg; fi
+      - name: Compilation de llama.cpp (dernière version, optimisations ARM natives)
+        run: |
+          git clone --depth 1 https://github.com/ggml-org/llama.cpp
+          git -C llama.cpp log -1 --format='llama.cpp %h %cd'
+          cmake -S llama.cpp -B llama.cpp/build -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=ON -DLLAMA_CURL=OFF
+          cmake --build llama.cpp/build --config Release -j 4
+          ls llama.cpp/build/bin
+      - name: Banc LFM3-Audio-2B
+        run: python bench/bench_lfm3.py --bin llama.cpp/build/bin --threads ${{ matrix.threads }} --ngl ${{ matrix.ngl }} --quant ${{ inputs.quant }} --json lfm3-${{ matrix.os }}-ngl${{ matrix.ngl }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lfm3-${{ matrix.os }}-ngl${{ matrix.ngl }}
+          path: |
+            lfm3-*.json
+            models/*.wav
