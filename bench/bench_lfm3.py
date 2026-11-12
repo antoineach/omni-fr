@@ -67,9 +67,12 @@ def wav_seconds(path: Path) -> float:
 def run(cmd: list[str], timeout: int = 1800) -> tuple[float, str]:
     print("$", " ".join(cmd), flush=True)
     t0 = time.perf_counter()
-    p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
     dt = time.perf_counter() - t0
     out = p.stdout + "\n" + p.stderr
+    for line in out.splitlines():   # lignes de performance de llama.cpp, pour le détail par étage
+        if re.search(r"(perf|eval time|load time|total time|tokens per second|t/s|codec|vocoder|audio)", line, re.I):
+            print("   |", line.strip()[:220])
     if p.returncode != 0:
         print(out[-3000:])
         raise RuntimeError(f"échec ({p.returncode}) : {' '.join(cmd[:2])}")
@@ -100,59 +103,76 @@ def main() -> None:
     bench = find_bin(bindir, "llama-bench")
     print("binaires :", tts, asr, bench)
 
-    model, mmproj = download(LFM3_REPO, [rf"LFM3-Audio-2B-{a.quant}\.gguf", r"mmproj-.*\.gguf"], dest)
+    # Projecteur audio (encodeur + codec) en Q8_0, comme le recommande Liquid.
+    model, mmproj = download(LFM3_REPO, [rf"LFM3-Audio-2B-{a.quant}\.gguf", r"mmproj-LFM3-Audio-2B-Q8_0\.gguf"], dest)
     common = ["-t", str(a.threads), "-ngl", str(a.ngl)]
     res: dict = {"machine": platform.machine(), "systeme": platform.platform(), "threads": a.threads,
-                 "ngl": a.ngl, "quant": a.quant, "modele": model.name, "mmproj": mmproj.name}
+                 "ngl": a.ngl, "quant": a.quant, "modele": model.name, "mmproj": mmproj.name, "erreurs": []}
 
-    # 1. Synthèse française
-    tts_rows = []
-    for i, text in enumerate(TEXTS_FR):
-        wav = dest / f"tts_fr_{i}.wav"
+    def section(name, fn):
+        try:
+            res[name] = fn()
+            print(f"[{name}]", json.dumps(res[name], ensure_ascii=False)[:1500], flush=True)
+        except Exception as e:  # une étape en échec n'empêche pas les autres
+            res["erreurs"].append(f"{name}: {e}")
+            print(f"[{name}] ÉCHEC : {e}", flush=True)
+
+    # 1. Débit de décodage du modèle principal et étalonnage Pi 5 (rapides, en premier)
+    section("decodage_jetons_s", lambda: round(bench_tg(bench, model, a.threads, a.ngl), 2))
+
+    def calib():
+        (c,) = download(CALIB_REPO, [r"gemma-3-1b-it-Q4_K_M\.gguf"], dest)
+        tg = bench_tg(bench, c, a.threads, a.ngl)
+        return {"gemma3_1b_q4km_jetons_s": round(tg, 2), "pi5_publie": PI5_GEMMA3_1B_TG,
+                "facteur_machine_sur_pi5": round(tg / PI5_GEMMA3_1B_TG, 2)}
+    section("etalonnage", calib)
+
+    # 2. Synthèse française. Une phrase très courte mesure le coût fixe (chargement, préchauffage),
+    #    retiré ensuite pour obtenir le coût de génération par seconde d'audio.
+    def synth(text: str, wav: Path) -> tuple[float, float]:
         base = tts + ["-m", str(model), "-mm", str(mmproj), "-p", text, "-o", str(wav)] + common
         try:
             dt, _ = run(base + ["--tts-lang", "fr"])
         except RuntimeError:
-            dt, _ = run(base)          # option absente de cette version : langue déduite du texte
-        dur = wav_seconds(wav)
-        tts_rows.append({"texte": text, "audio_s": round(dur, 2), "calcul_s": round(dt, 2),
-                         "facteur_temps_reel": round(dt / dur, 3)})
-        print(tts_rows[-1], flush=True)
-    res["tts_fr"] = tts_rows
+            dt, _ = run(base)
+        return dt, wav_seconds(wav)
 
-    # 2. Transcription française de l'audio produit
-    asr_rows = []
-    for i, text in enumerate(TEXTS_FR):
-        wav16 = dest / f"tts_fr_{i}_16k.wav"
-        if shutil.which("ffmpeg"):
-            subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(dest / f"tts_fr_{i}.wav"),
-                            "-ar", "16000", "-ac", "1", str(wav16)], check=True)
-        else:
-            wav16 = dest / f"tts_fr_{i}.wav"
-        dt, out = run(asr + ["-m", str(model), "-mm", str(mmproj), "--audio", str(wav16),
-                             "-sys", "Perform ASR in French.", "-p", "<__media__>", "-n", "128",
-                             "--temp", "0", "-no-cnv"] + common)
-        dur = wav_seconds(wav16)
-        asr_rows.append({"reference": text, "sortie_brute": out.strip()[-600:], "audio_s": round(dur, 2),
-                         "calcul_s": round(dt, 2), "facteur_temps_reel": round(dt / dur, 3)})
-        print({k: v for k, v in asr_rows[-1].items() if k != "sortie_brute"}, flush=True)
-    res["asr_fr"] = asr_rows
+    def tts_all():
+        dt0, dur0 = synth("Oui.", dest / "tts_fr_court.wav")
+        rows = [{"texte": "Oui.", "audio_s": round(dur0, 2), "calcul_s": round(dt0, 2)}]
+        for i, text in enumerate(TEXTS_FR):
+            dt, dur = synth(text, dest / f"tts_fr_{i}.wav")
+            rows.append({"texte": text, "audio_s": round(dur, 2), "calcul_s": round(dt, 2),
+                         "facteur_temps_reel_brut": round(dt / dur, 3),
+                         "facteur_temps_reel_net": round((dt - dt0) / max(0.1, dur - dur0), 3)})
+        return rows
+    section("tts_fr", tts_all)
 
-    # 3. Débit de décodage du modèle principal
-    res["decodage_jetons_s"] = round(bench_tg(bench, model, a.threads, a.ngl), 2)
+    # 3. Transcription française de l'audio produit (aller-retour)
+    def asr_all():
+        rows = []
+        for i, text in enumerate(TEXTS_FR):
+            src = dest / f"tts_fr_{i}.wav"
+            wav16 = dest / f"tts_fr_{i}_16k.wav"
+            subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(src), "-ar", "16000",
+                            "-ac", "1", str(wav16)], check=True)
+            dt, out = run(asr + ["-m", str(model), "-mm", str(mmproj), "--audio", str(wav16),
+                                 "-sys", "Perform ASR in French.", "-p", "<__media__>", "-n", "128",
+                                 "--temp", "0"] + common, timeout=900)
+            dur = wav_seconds(wav16)
+            rows.append({"reference": text, "sortie": out.strip()[-500:], "audio_s": round(dur, 2),
+                         "calcul_s": round(dt, 2), "facteur_temps_reel_brut": round(dt / dur, 3)})
+        return rows
+    section("asr_fr", asr_all)
 
-    # 4. Étalonnage Pi 5
-    (calib,) = download(CALIB_REPO, [r"gemma-3-1b-it-Q4_K_M\.gguf"], dest)
-    tg = bench_tg(bench, calib, a.threads, a.ngl)
-    res["etalonnage"] = {"gemma3_1b_q4km_jetons_s": round(tg, 2), "pi5_publie": PI5_GEMMA3_1B_TG,
-                         "facteur_machine_sur_pi5": round(tg / PI5_GEMMA3_1B_TG, 2)}
-    f = res["etalonnage"]["facteur_machine_sur_pi5"]
-    res["estimation_pi5"] = {
-        "tts_facteur_temps_reel": round(max(r["facteur_temps_reel"] for r in tts_rows) * f, 2),
-        "asr_facteur_temps_reel": round(max(r["facteur_temps_reel"] for r in asr_rows) * f, 2),
-        "note": "extrapolation linéaire par le débit de décodage ; < 1 = plus rapide que le temps réel",
-    }
-    print(json.dumps({k: v for k, v in res.items() if k not in ("asr_fr",)}, ensure_ascii=False, indent=2))
+    f = res.get("etalonnage", {}).get("facteur_machine_sur_pi5")
+    if f and "tts_fr" in res:
+        net = max(r["facteur_temps_reel_net"] for r in res["tts_fr"] if "facteur_temps_reel_net" in r)
+        res["estimation_pi5"] = {
+            "tts_facteur_temps_reel_net": round(net * f, 2),
+            "note": "extrapolation linéaire par le débit de décodage ; < 1 = plus rapide que le temps réel",
+        }
+    print(json.dumps({k: v for k, v in res.items() if k != "asr_fr"}, ensure_ascii=False, indent=2))
     if a.json:
         Path(a.json).write_text(json.dumps(res, ensure_ascii=False, indent=2), encoding="utf-8")
 
