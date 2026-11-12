@@ -53,9 +53,14 @@ def test_seed_scenarios_are_executable_and_scorable():
     sim = HomeSimulator()
     for s in scen:
         for i, c in enumerate(s.appels, 1):
+            if c.get("args_libres"):          # requête web libre : seul le nom est noté
+                continue
             res, _ = sim.execute(ToolCall(i, c["name"], c["args"]), confirmed=True)
             assert res.status == "ok", (s.id, res.payload)
-    perfect = aggregate(score_one(s, Prediction(s.appels, s.comportement)) for s in scen)
+    def ideal(s):
+        txt = " ".join(g[0] for g in s.reponse_contient)
+        return Prediction(s.appels, s.comportement, txt)
+    perfect = aggregate(score_one(s, ideal(s)) for s in scen)
     assert perfect["reussite"] == 1.0
     lazy = aggregate(score_one(s, Prediction([], "repondre")) for s in scen)
     assert lazy["reussite"] < 0.2
@@ -65,3 +70,15 @@ def test_parallel_partial_credit():
     s = next(x for x in load(SEED) if x.id == "par-01")
     r = score_one(s, Prediction(s.appels[:2], "appeler"))
     assert 0.5 < r["f1_outil"] <= 1.0 and not r["reussite"]
+
+
+def test_number_and_case_normalisation():
+    s = next(x for x in load(SEED) if x.id == "simple-05")
+    p = Prediction([{"name": "maison.thermostat", "args": {"entite": "climate.salon", "temperature": 21.0}}], "appeler")
+    assert score_one(s, p)["reussite"]
+
+
+def test_grounding_requires_tool_facts():
+    s = next(x for x in load(SEED) if x.id == "fid-01")
+    assert score_one(s, Prediction([], "repondre", "Demain, pluie et 13 degrés au maximum."))["reussite"]
+    assert not score_one(s, Prediction([], "repondre", "Demain il fera beau et 20 degrés."))["reussite"]

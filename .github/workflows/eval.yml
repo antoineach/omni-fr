@@ -1,0 +1,90 @@
+# Est-il « bête » ? Évaluation sur runner Linux ARM (Neoverse N2, 4 cœurs, 16 Go), CPU seul.
+#   - texte : 36 scénarios (domotique, culture, recherche web, fidélité aux résultats) par modèle
+#   - audio : transcription française de LFM3-Audio-2B avec bruit rose et brouhaha
+# llama.cpp est figé et mis en cache (même clé que bench-lfm3).
+
+name: eval
+
+on:
+  workflow_dispatch:
+
+env:
+  LLAMA_CPP_COMMIT: 8ca5a80
+
+jobs:
+  texte:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {name: lfm3-1.7b, repos: "LiquidAI/LFM3-1.7B-GGUF bartowski/LFM3-1.7B-GGUF"}
+          - {name: gemma4-e4b, repos: "ggml-org/gemma-4-e4b-it-GGUF bartowski/google_gemma-4-E4B-it-GGUF"}
+          - {name: qwen3.5-9b, repos: "unsloth/Qwen3.5-9B-GGUF bartowski/Qwen_Qwen3.5-9B-GGUF"}
+    runs-on: ubuntu-24.04-arm
+    name: texte ${{ matrix.name }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install huggingface_hub numpy
+      - name: Cache de llama.cpp compilé
+        id: cache-llama
+        uses: actions/cache@v4
+        with:
+          path: llama.cpp/build/bin
+          key: llama-${{ runner.os }}-${{ runner.arch }}-${{ env.LLAMA_CPP_COMMIT }}
+      - name: Compilation de llama.cpp (seulement si absent du cache)
+        if: steps.cache-llama.outputs.cache-hit != 'true'
+        run: |
+          git clone --filter=blob:none https://github.com/ggml-org/llama.cpp
+          git -C llama.cpp checkout -q $LLAMA_CPP_COMMIT
+          cmake -S llama.cpp -B llama.cpp/build -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=ON -DLLAMA_CURL=OFF -DGGML_METAL=OFF -DBUILD_SHARED_LIBS=OFF
+          cmake --build llama.cpp/build --config Release -j 4 --target llama llama-tts llama-bench
+      - name: Évaluation
+        run: |
+          args=""; for r in ${{ matrix.repos }}; do args="$args --repo $r"; done
+          python bench/eval_llm.py --llama llama.cpp/build/bin/llama $args --name ${{ matrix.name }} --threads 4 --json eval-${{ matrix.name }}.json
+      - name: Journal du serveur (en cas d'échec)
+        if: failure()
+        run: tail -n 80 serveur-*.log || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eval-${{ matrix.name }}
+          path: eval-*.json
+
+  audio:
+    runs-on: ubuntu-24.04-arm
+    name: audio lfm3-audio-2b
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install huggingface_hub numpy
+      - name: Cache de llama.cpp compilé
+        id: cache-llama
+        uses: actions/cache@v4
+        with:
+          path: llama.cpp/build/bin
+          key: llama-${{ runner.os }}-${{ runner.arch }}-${{ env.LLAMA_CPP_COMMIT }}
+      - name: Compilation de llama.cpp (seulement si absent du cache)
+        if: steps.cache-llama.outputs.cache-hit != 'true'
+        run: |
+          git clone --filter=blob:none https://github.com/ggml-org/llama.cpp
+          git -C llama.cpp checkout -q $LLAMA_CPP_COMMIT
+          cmake -S llama.cpp -B llama.cpp/build -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=ON -DLLAMA_CURL=OFF -DGGML_METAL=OFF -DBUILD_SHARED_LIBS=OFF
+          cmake --build llama.cpp/build --config Release -j 4 --target llama llama-tts llama-bench
+      - name: Transcription bruitée
+        run: python bench/eval_audio.py --bin llama.cpp/build/bin --threads 4 --json eval-audio.json
+      - name: Journal du serveur (en cas d'échec)
+        if: failure()
+        run: tail -n 80 serveur-*.log || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eval-audio
+          path: eval-audio.json

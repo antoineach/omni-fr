@@ -29,6 +29,7 @@ class Scenario:
     dialogue: list[dict[str, str]]
     appels: list[dict[str, Any]]
     comportement: str
+    reponse_contient: list[list[str]] = field(default_factory=list)   # ET de OU, insensible à la casse
 
     @property
     def parallel(self) -> bool:
@@ -39,6 +40,7 @@ class Scenario:
 class Prediction:
     appels: list[dict[str, Any]] = field(default_factory=list)
     comportement: str = "repondre"
+    texte: str = ""
 
 
 def load(path: str | Path) -> list[Scenario]:
@@ -52,12 +54,30 @@ def load(path: str | Path) -> list[Scenario]:
             beh = d["attendu"]["comportement"]
             if beh not in BEHAVIOURS:
                 raise ValueError(f"{d['id']}: comportement inconnu {beh}")
-            out.append(Scenario(d["id"], d["categorie"], d["dialogue"], d["attendu"].get("appels", []), beh))
+            out.append(Scenario(d["id"], d["categorie"], d["dialogue"], d["attendu"].get("appels", []), beh,
+                                d["attendu"].get("reponse_contient", [])))
     return out
 
 
-def _canon(call: dict[str, Any]) -> str:
-    return json.dumps({"name": call["name"], "args": call.get("args", {})}, sort_keys=True, ensure_ascii=False)
+def _norm(v: Any) -> Any:
+    if isinstance(v, bool) or v is None:
+        return v
+    if isinstance(v, (int, float)):
+        return float(v)                      # 21 et 21.0 sont le même argument
+    if isinstance(v, str):
+        return v.strip().casefold()
+    return v
+
+
+def _canon(call: dict[str, Any], libre: bool = False) -> str:
+    """Forme canonique d'un appel. ``libre`` : seul le nom compte (requête web en texte libre)."""
+    args = {} if libre else {k: _norm(v) for k, v in call.get("args", {}).items()}
+    return json.dumps({"name": call["name"], "args": args}, sort_keys=True, ensure_ascii=False)
+
+
+def _contains(text: str, groups: list[list[str]]) -> bool:
+    t = text.casefold()
+    return all(any(alt.casefold() in t for alt in g) for g in groups)
 
 
 def score_one(s: Scenario, p: Prediction) -> dict[str, Any]:
@@ -66,10 +86,14 @@ def score_one(s: Scenario, p: Prediction) -> dict[str, Any]:
     prec = tp / max(1, sum(got_names.values())) if got_names else float(not exp_names)
     rec = tp / max(1, sum(exp_names.values())) if exp_names else float(not got_names)
     f1 = 0.0 if prec + rec == 0 else 2 * prec * rec / (prec + rec)
-    args_exact = Counter(map(_canon, s.appels)) == Counter(map(_canon, p.appels))
-    passed = args_exact and p.comportement == s.comportement
+    libres = {c["name"] for c in s.appels if c.get("args_libres")}
+    args_exact = (Counter(_canon(c, c["name"] in libres) for c in s.appels)
+                  == Counter(_canon(c, c["name"] in libres) for c in p.appels))
+    contenu_ok = _contains(p.texte, s.reponse_contient) if s.reponse_contient else True
+    beh_ok = p.comportement == s.comportement
+    passed = args_exact and beh_ok and contenu_ok
     return {"id": s.id, "categorie": s.categorie, "f1_outil": f1, "args_exacts": args_exact,
-            "comportement_ok": p.comportement == s.comportement, "reussite": passed,
+            "comportement_ok": beh_ok, "contenu_ok": contenu_ok, "reussite": passed,
             "parallele": s.parallel}
 
 
