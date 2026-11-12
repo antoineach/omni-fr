@@ -138,8 +138,10 @@ def main() -> None:
         clean.append(resample(x, sr))
         print(f"synthèse {i + 1}/{len(texts)} : {len(clean[-1]) / 16000:.1f} s", flush=True)
 
-    cmd = [str(binp / "llama"), "serve", "-m", str(model), "-mm", str(mmproj), "--port", str(a.port),
+    server = [str(binp / "llama-server")] if (binp / "llama-server").exists() else [str(binp / "llama"), "serve"]
+    cmd = server + ["-m", str(model), "-mm", str(mmproj), "--port", str(a.port),
            "-c", "4096", "-t", str(a.threads), "-np", "1"]
+    print("$", " ".join(cmd), flush=True)
     log = open("serveur-audio.log", "w")
     proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT)
     rng = np.random.default_rng(0)

@@ -45,7 +45,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: llama.cpp/build/bin
-          key: llama-${{ runner.os }}-${{ runner.arch }}-${{ env.LLAMA_CPP_COMMIT }}
+          key: llama-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.LLAMA_CPP_COMMIT }}
       - name: Compilation de llama.cpp (seulement si absent du cache)
         if: steps.cache-llama.outputs.cache-hit != 'true'
         run: |
@@ -53,7 +53,7 @@ jobs:
           git -C llama.cpp checkout -q $LLAMA_CPP_COMMIT
           git -C llama.cpp log -1 --format='llama.cpp %h %cd'
           cmake -S llama.cpp -B llama.cpp/build -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=ON -DLLAMA_CURL=OFF -DGGML_METAL=OFF -DBUILD_SHARED_LIBS=OFF
-          cmake --build llama.cpp/build --config Release -j 4 --target llama llama-tts llama-bench
+          cmake --build llama.cpp/build --config Release -j 4
           ls llama.cpp/build/bin
       - name: Banc LFM3-Audio-2B
         run: python bench/bench_lfm3.py --bin llama.cpp/build/bin --threads ${{ matrix.threads }} --ngl 0 --quant ${{ matrix.quant }} --json lfm3-${{ matrix.os }}-${{ matrix.quant }}.json
