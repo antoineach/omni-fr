@@ -1,4 +1,5 @@
-# LFM3-Audio-2B dans llama.cpp compilé sur place, CPU seul (et Metal sur Mac en plus).
+# LFM3-Audio-2B dans llama.cpp, CPU seul.
+# llama.cpp est figé sur un commit testé et compilé une seule fois : le binaire est mis en cache.
 # Lancer : onglet Actions > bench-lfm3 > Run workflow. Répéter 3 fois avant de conclure.
 
 name: bench-lfm3
@@ -6,9 +7,13 @@ name: bench-lfm3
 on:
   workflow_dispatch:
     inputs:
-      note:
-        description: "Note libre"
-        default: ""
+      mac:
+        description: "Ajouter le runner Mac (M1 virtualisé, 3 cœurs, sans Metal : borne basse, pas représentatif d'un vrai Mac)"
+        type: boolean
+        default: false
+
+env:
+  LLAMA_CPP_COMMIT: 8ca5a80   # version testée le 12 nov. 2026 (LFM3-Audio exige b11960 ou plus)
 
 jobs:
   bench:
@@ -17,11 +22,8 @@ jobs:
       matrix:
         # Le Mac GitHub est un M1 virtualisé sans Metal utilisable : CPU seul, compilé sans Metal.
         # Q4_0 est la quantification que llama.cpp réorganise pour les instructions ARM (i8mm, dotprod).
-        include:
-          - {os: ubuntu-24.04-arm, threads: 4, quant: Q4_0}
-          - {os: ubuntu-24.04-arm, threads: 4, quant: Q4_K_M}
-          - {os: ubuntu-24.04-arm, threads: 4, quant: Q8_0}
-          - {os: macos-15, threads: 3, quant: Q4_0}
+        # (le contexte « matrix » est interdit dans un « if » de job : la liste est choisie ici)
+        include: ${{ fromJSON(inputs.mac && '[{"os":"ubuntu-24.04-arm","threads":4,"quant":"Q4_0"},{"os":"ubuntu-24.04-arm","threads":4,"quant":"Q4_K_M"},{"os":"ubuntu-24.04-arm","threads":4,"quant":"Q8_0"},{"os":"macos-15","threads":3,"quant":"Q4_0"}]' || '[{"os":"ubuntu-24.04-arm","threads":4,"quant":"Q4_0"},{"os":"ubuntu-24.04-arm","threads":4,"quant":"Q4_K_M"},{"os":"ubuntu-24.04-arm","threads":4,"quant":"Q8_0"}]') }}
     runs-on: ${{ matrix.os }}
     name: ${{ matrix.os }} ${{ matrix.quant }}
     timeout-minutes: 60
@@ -38,12 +40,20 @@ jobs:
         run: |
           pip install huggingface_hub
           if [ "$RUNNER_OS" = "Linux" ]; then sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg libcurl4-openssl-dev; else brew install ffmpeg; fi
-      - name: Compilation de llama.cpp (dernière version, optimisations ARM natives)
+      - name: Cache de llama.cpp compilé
+        id: cache-llama
+        uses: actions/cache@v4
+        with:
+          path: llama.cpp/build/bin
+          key: llama-${{ runner.os }}-${{ runner.arch }}-${{ env.LLAMA_CPP_COMMIT }}
+      - name: Compilation de llama.cpp (seulement si absent du cache)
+        if: steps.cache-llama.outputs.cache-hit != 'true'
         run: |
-          git clone --depth 1 https://github.com/ggml-org/llama.cpp
+          git clone --filter=blob:none https://github.com/ggml-org/llama.cpp
+          git -C llama.cpp checkout -q $LLAMA_CPP_COMMIT
           git -C llama.cpp log -1 --format='llama.cpp %h %cd'
-          cmake -S llama.cpp -B llama.cpp/build -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=ON -DLLAMA_CURL=OFF -DGGML_METAL=OFF
-          cmake --build llama.cpp/build --config Release -j 4
+          cmake -S llama.cpp -B llama.cpp/build -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=ON -DLLAMA_CURL=OFF -DGGML_METAL=OFF -DBUILD_SHARED_LIBS=OFF
+          cmake --build llama.cpp/build --config Release -j 4 --target llama llama-tts llama-bench
           ls llama.cpp/build/bin
       - name: Banc LFM3-Audio-2B
         run: python bench/bench_lfm3.py --bin llama.cpp/build/bin --threads ${{ matrix.threads }} --ngl 0 --quant ${{ matrix.quant }} --json lfm3-${{ matrix.os }}-${{ matrix.quant }}.json
