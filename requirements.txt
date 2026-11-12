@@ -1,0 +1,6 @@
+# Cœur : modèle, banc, simulateur, tests. Tourne sur CPU, Windows, macOS et Linux ARM.
+torch>=2.4
+numpy
+soundfile
+pytest
+transformers==4.57.3

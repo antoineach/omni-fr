@@ -1,0 +1,45 @@
+# Banc de vitesse sur matériel ARM, sans rien acheter.
+#   - macos-14 : runner GitHub sur Apple M1 (gratuit pour les dépôts publics)
+#   - ubuntu-24.04-arm : runner Linux arm64 (gratuit pour les dépôts publics)
+# Lancer à la main : onglet Actions > bench-arm > Run workflow.
+# Les runners sont partagés : répéter 3 fois et garder la médiane avant de conclure.
+
+name: bench-arm
+
+on:
+  workflow_dispatch:
+    inputs:
+      threads:
+        description: "Nombre de threads"
+        default: "3"
+
+jobs:
+  bench:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Dépendances
+        run: pip install -r requirements.txt
+      - name: Tests
+        run: python -m pytest -q
+      - name: Banc float32
+        run: python -m bench.bench_step --preset all --codebooks 8 --threads ${{ inputs.threads }} --n 40 --json bench-${{ matrix.os }}-fp32.json
+      - name: Banc int8
+        run: python -m bench.bench_step --preset all --codebooks 8 --threads ${{ inputs.threads }} --n 40 --int8 --json bench-${{ matrix.os }}-int8.json
+      - name: Banc du décodeur du codec (vrai checkpoint Qwen)
+        continue-on-error: true
+        run: |
+          pip install qwen-tts==0.1.1 accelerate==1.12.0 librosa einops sox torchaudio onnxruntime
+          python -m bench.bench_codec --threads ${{ inputs.threads }} --chunk 4 --json bench-${{ matrix.os }}-codec4.json
+          python -m bench.bench_codec --threads ${{ inputs.threads }} --chunk 12 --json bench-${{ matrix.os }}-codec12.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-${{ matrix.os }}
+          path: bench-*.json
