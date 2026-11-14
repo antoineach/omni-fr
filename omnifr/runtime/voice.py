@@ -439,8 +439,9 @@ def _play_stream(sr: int, chunks, mic=None, vad=None, barge_in: bool = False, t0
     while not stats["done"]:
         el = max(1e-3, time.time() - stats["t_first"])
         gen_s = stats["gen"] / sr
-        # vitesse mesurée après le premier morceau, sur au moins deux morceaux
-        speed = (gen_s - first_s) / el if gen_s >= 3 * first_s else None
+        # vitesse mesurée sur au moins 0,8 s après le premier morceau. Un morceau du serveur arrive
+        # souvent découpé en plusieurs lectures réseau simultanées : compter les morceaux ne suffit pas.
+        speed = (gen_s - first_s) / el if el >= 0.8 else None
         if speed is None:
             need = float("inf")
         else:
