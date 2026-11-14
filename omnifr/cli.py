@@ -200,6 +200,12 @@ def cmd_telecharger(a) -> None:
     ref = next(x for _, x in clips if 6 <= len(x) / 16000 <= 12)
     sf.write(str(d / "voix_reference.wav"), ref, 16000)
     cfg["voix_reference"] = str(d / "voix_reference.wav")
+    print("   voix Qwen3-TTS (0.6B expressif et clone)", flush=True)
+    for r in ("Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice", "Qwen/Qwen3-TTS-12Hz-0.6B-Base", "Qwen/Qwen3-TTS-Tokenizer-12Hz"):
+        try:
+            snapshot_download(r)
+        except Exception as e:
+            print(f"   {r} : {str(e)[:150]}", flush=True)
     print("5/5 modèles de l'assistant (déjà là si « installer » est passé)", flush=True)
     from omnifr.runtime.voice import Parakeet, Vad, WakeWord
     Parakeet(d / "asr")
@@ -363,7 +369,9 @@ def cmd_discuter(a) -> None:
         from omnifr.runtime import voice
         print("chargement de la voix…", flush=True)
         ref = Path(a.voix) if a.voix else (Path(cfg["voix_reference"]) if cfg.get("voix_reference") else None)
-        spk = voice.Speaker(voice.make_tts(Path(cfg["zonos3"]), ref, gpu=not a.voix_cpu, log=home(a) / "zonos3.log"))
+        asr = voice.Parakeet(home(a) / "asr") if a.moteur_voix == "qwen-clone" else None
+        spk = voice.Speaker(voice.make_tts(Path(cfg["zonos3"]), ref, gpu=not a.voix_cpu, log=home(a) / "zonos3.log",
+                                           engine=a.moteur_voix, speaker=a.voix_nom, size=a.taille_voix, asr=asr))
     with _brain(a, cfg) as llm:
         orch = _orchestrator(a, llm, on_wait=lambda s: print(f"Jarvis : {s}"))
         print("Écrivez vos demandes (vide pour quitter).")
@@ -390,7 +398,8 @@ def cmd_assistant(a) -> None:
     print("chargement de l'oreille, du mot d'éveil et de la voix…", flush=True)
     asr, vad, wake = voice.Parakeet(d / "asr"), voice.Vad(d / "asr"), voice.WakeWord(threshold=a.seuil)
     ref = Path(a.voix) if a.voix else (Path(cfg["voix_reference"]) if cfg.get("voix_reference") else None)
-    tts = voice.make_tts(Path(cfg["zonos3"]), ref, gpu=not a.voix_cpu, log=d / "zonos3.log")
+    tts = voice.make_tts(Path(cfg["zonos3"]), ref, gpu=not a.voix_cpu, log=d / "zonos3.log",
+                         engine=a.moteur_voix, speaker=a.voix_nom, size=a.taille_voix, asr=asr)
     spk = voice.Speaker(tts)
     with _brain(a, cfg) as llm:
         mic = voice.Mic(device=a.micro)
@@ -517,12 +526,22 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--parler", action="store_true", help="lire les réponses à voix haute (ZONOS3)")
     p.add_argument("--voix", default="", help="extrait WAV de la voix à cloner")
     p.add_argument("--voix-cpu", action="store_true", help="ZONOS3 sur le processeur (libère la VRAM)")
+    p.add_argument("--moteur-voix", choices=["qwen", "qwen-clone", "zonos3"], default="qwen",
+                   help="qwen : Qwen3-TTS expressif (voix prédéfinie, émotions) ; qwen-clone : votre voix (--voix), "
+                        "sans contrôle d'émotion ; zonos3 : ancien moteur")
+    p.add_argument("--voix-nom", default="", help="voix prédéfinie Qwen3-TTS (liste affichée au chargement)")
+    p.add_argument("--taille-voix", choices=["0.6B", "1.7B"], default="0.6B", help="1.7B : meilleur, ~4 Go de VRAM")
     p.set_defaults(f=cmd_discuter)
 
     p = sub.add_parser("assistant", help="l'assistant à la voix")
     runtime_opts(p)
     p.add_argument("--voix", default="", help="extrait WAV de 5 à 10 s de la voix à cloner (avec consentement)")
     p.add_argument("--voix-cpu", action="store_true", help="ZONOS3 sur le processeur (libère la VRAM)")
+    p.add_argument("--moteur-voix", choices=["qwen", "qwen-clone", "zonos3"], default="qwen",
+                   help="qwen : Qwen3-TTS expressif (voix prédéfinie, émotions) ; qwen-clone : votre voix (--voix), "
+                        "sans contrôle d'émotion ; zonos3 : ancien moteur")
+    p.add_argument("--voix-nom", default="", help="voix prédéfinie Qwen3-TTS (liste affichée au chargement)")
+    p.add_argument("--taille-voix", choices=["0.6B", "1.7B"], default="0.6B", help="1.7B : meilleur, ~4 Go de VRAM")
     p.add_argument("--micro", default=None, help="périphérique d'entrée (nom ou numéro sounddevice)")
     p.add_argument("--seuil", type=float, default=0.5, help="seuil du mot d'éveil")
     p.add_argument("--sans-eveil", action="store_true", help="écoute en continu, sans « Hey Jarvis »")

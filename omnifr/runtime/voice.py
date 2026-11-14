@@ -19,6 +19,7 @@ import tarfile
 import tempfile
 import threading
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -197,16 +198,82 @@ class Zonos3Server:
             body["speaker_audio_base64"] = self.ref
         req = urllib.request.Request(f"http://127.0.0.1:{self.port}/v2/generate", data=_json.dumps(body).encode(),
                                      headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=120) as r:
-            x, sr = sf.read(io.BytesIO(r.read()), dtype="float32", always_2d=True)
+        try:
+            with urllib.request.urlopen(req, timeout=120) as r:
+                x, sr = sf.read(io.BytesIO(r.read()), dtype="float32", always_2d=True)
+        except urllib.error.HTTPError as e:
+            raise RuntimeError(f"zonos3-server {e.code} : {e.read().decode('utf-8', 'replace')[:400]}") from None
         return x.mean(1), sr
 
     def close(self) -> None:
         self.proc.terminate()
 
 
-def make_tts(root: Path, voice_ref: Path | None, gpu: bool, log: Path | None = None):
-    """Serveur si possible, sinon le CLI."""
+# Émotion -> instruction de jeu pour Qwen3-TTS CustomVoice (l'anglais est la langue d'instruction la mieux suivie).
+QWEN_INSTRUCT = {"calme": "Speak in a calm, soft and reassuring tone.",
+                 "joie": "Speak in a cheerful, happy and lively tone.",
+                 "inquietude": "Speak in a worried, urgent and tense tone.",
+                 "ironie": "Speak in a dry, ironic, slightly amused tone, like a witty British butler.",
+                 "neutre": ""}
+
+
+class Qwen3TTS:
+    """Qwen3-TTS (Alibaba, Apache 2.0) sur GPU, dans le processus : le modèle reste chargé.
+
+    Deux modes, car Qwen3-TTS sépare clonage et expressions :
+    - ``clone`` : modèle Base, voix clonée depuis un extrait ; l'émotion n'est pas pilotable ;
+    - ``expressif`` : modèle CustomVoice, voix prédéfinie, émotion pilotée par instruction.
+    Sur une RTX 2070 (Turing) : float16, attention SDPA ; le 0.6B laisse la place au cerveau.
+    """
+
+    def __init__(self, mode: str = "expressif", size: str = "0.6B", voice_ref: Path | None = None,
+                 speaker: str = "", asr=None, device: str = "cuda:0"):
+        import torch
+        from qwen_tts import Qwen3TTSModel
+        kind = "Base" if mode == "clone" else "CustomVoice"
+        dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16
+        self.m = Qwen3TTSModel.from_pretrained(f"Qwen/Qwen3-TTS-12Hz-{size}-{kind}", device_map=device,
+                                               dtype=dtype, attn_implementation="sdpa")
+        self.mode, self.prompt = mode, None
+        if mode == "clone":
+            if not voice_ref:
+                raise ValueError("mode clone : donner --voix extrait.wav")
+            ref_text = ""
+            if asr is not None:      # la transcription de l'extrait améliore le clonage
+                import soundfile as sf
+                x, sr = sf.read(str(voice_ref), dtype="float32", always_2d=True)
+                from bench.eval_audio import resample
+                ref_text = asr(resample(x.mean(1), sr))
+            self.prompt = self.m.create_voice_clone_prompt(ref_audio=str(voice_ref), ref_text=ref_text or None,
+                                                           x_vector_only_mode=not ref_text)
+        else:
+            names = []
+            for attr in ("get_supported_speakers", "get_supported_spks"):
+                if hasattr(self.m, attr):
+                    names = list(getattr(self.m, attr)())
+                    break
+            self.speaker = speaker or ("Ryan" if "Ryan" in names or not names else names[0])
+            if names:
+                print(f"voix disponibles : {', '.join(names)} ; choisie : {self.speaker}", flush=True)
+
+    def synth(self, text: str, emotion: str = "neutre") -> tuple[np.ndarray, int]:
+        if self.mode == "clone":
+            wavs, sr = self.m.generate_voice_clone(text=text, language="French", voice_clone_prompt=self.prompt)
+        else:
+            wavs, sr = self.m.generate_custom_voice(text=text, language="French", speaker=self.speaker,
+                                                    instruct=QWEN_INSTRUCT.get(emotion, ""))
+        return np.asarray(wavs[0], dtype=np.float32).reshape(-1), sr
+
+
+def make_tts(root: Path, voice_ref: Path | None, gpu: bool, log: Path | None = None, engine: str = "qwen",
+             speaker: str = "", size: str = "0.6B", asr=None):
+    """Qwen3-TTS par défaut (expressif, ou clone si --voix-mode clone) ; ZONOS3 en repli."""
+    if engine.startswith("qwen"):
+        mode = "clone" if engine == "qwen-clone" else "expressif"
+        try:
+            return Qwen3TTS(mode, size, voice_ref, speaker, asr=asr)
+        except Exception as e:
+            print(f"Qwen3-TTS indisponible ({type(e).__name__}: {str(e)[:200]}) ; repli sur ZONOS3", flush=True)
     try:
         return Zonos3Server(root, voice_ref, gpu, log=log)
     except Exception as e:
@@ -292,8 +359,11 @@ class Speaker:
         q: queue.Queue = queue.Queue(maxsize=2)
 
         def worker():
-            for s in sentences:
-                q.put(self.tts.synth(s, emotion))
+            try:
+                for s in sentences:
+                    q.put(self.tts.synth(s, emotion))
+            except Exception as e:
+                print(f"   ⚠ voix : {e}", flush=True)
             q.put(None)
         threading.Thread(target=worker, daemon=True).start()
         while (item := q.get()) is not None:

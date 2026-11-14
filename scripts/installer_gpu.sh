@@ -45,6 +45,7 @@ pip install --no-deps openwakeword==0.6.0
 if [ "${1:-}" != "--sans-affinage" ]; then
   pip install torch --index-url https://download.pytorch.org/whl/cu128
   pip install -e ".[affinage,bancs]"
+  pip install -e ".[voix-gpu]"
 fi
 
 python -m pytest -q
