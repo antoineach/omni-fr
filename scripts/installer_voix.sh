@@ -10,7 +10,9 @@ python3 -m venv .venv-voix
 # faster-qwen3-tts : graphes CUDA + génération en flux (la bibliothèque officielle n'a pas de flux).
 # Il apporte qwen-tts-hf ; l'officiel qwen-tts ne doit pas cohabiter avec lui.
 .venv-voix/bin/pip uninstall -y qwen-tts 2>/dev/null || true
-.venv-voix/bin/pip install faster-qwen3-tts
+# transformers figé à la version minimale de qwen-tts-hf : en 5.23, le codec (Mimi) a changé et le
+# chargement plante dans Qwen3TTSTokenizerV2Encoder (self.upsample = None).
+.venv-voix/bin/pip install faster-qwen3-tts "transformers==5.15.1"
 .venv-voix/bin/python - <<'PY'
 from huggingface_hub import snapshot_download
 for r in ("Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice", "Qwen/Qwen3-TTS-12Hz-0.6B-Base", "Qwen/Qwen3-TTS-Tokenizer-12Hz"):
