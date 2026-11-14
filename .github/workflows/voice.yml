@@ -92,6 +92,14 @@ jobs:
           pip install -e zonos-src
           ls zonos-src/zonos
           echo "PYTHONPATH=$PWD/zonos-src" >> $GITHUB_ENV
+      - name: codec.cpp (Chatterbox en GGUF, sans PyTorch)
+        if: matrix.engine == 'chatterbox-cpp'
+        run: |
+          git clone --depth 1 --recurse-submodules https://github.com/mybigday/codec.cpp
+          cmake -S codec.cpp -B codec.cpp/build -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=ON -DLLAMA_CURL=OFF
+          cmake --build codec.cpp/build --config Release -j 4
+          find codec.cpp/build -name tts-cli -type f
+          cp "$(find codec.cpp/build -name tts-cli -type f | head -1)" codec.cpp/build/tts-cli
       - name: Synthèse
         run: python bench/eval_tts.py --engine ${{ matrix.engine }} --out tts-wav --json eval-tts-${{ matrix.engine }}.json
       - uses: actions/upload-artifact@v4

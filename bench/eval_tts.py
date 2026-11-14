@@ -75,6 +75,50 @@ class Chatterbox:
         return w.squeeze().cpu().numpy().astype(np.float32)
 
 
+class ChatterboxCpp:
+    """Même modèle Chatterbox Multilingual, quantifié en GGUF, exécuté par codec.cpp (llama.cpp + codec ggml)."""
+
+    def __init__(self, ref: Path, binp: Path, dest: Path, quant: str):
+        import subprocess
+        from huggingface_hub import hf_hub_download
+        self.sp, self.bin, self.ref = subprocess, str(binp), str(ref)
+        files = [f"chatterbox-mtl-{quant}.gguf", f"codec-{quant}.gguf"]
+        for repo in ("hans00/Chatterbox-Multilingual-TTS-GGUF", "BricksDisplay/Chatterbox-Multilingual-TTS-GGUF"):
+            try:
+                self.backbone, self.codec = (hf_hub_download(repo, f, local_dir=dest) for f in files)
+                print(f"GGUF depuis {repo} : {files}", flush=True)
+                break
+            except Exception as e:
+                print(f"{repo} : {e}", flush=True)
+        h = subprocess.run([self.bin, "synthesize", "--help"], capture_output=True, text=True)
+        self.help = h.stdout + h.stderr
+        print(self.help[:3000], flush=True)
+        self.exag = next((f for f in ("--exaggeration", "--exag", "--emotion") if f in self.help), None)
+        self.sr = 24000
+        self.out = dest / "cpp_tmp.wav"
+
+    def jobs(self):
+        for emo, t in PHRASES:
+            yield f"cpp_{emo}", t, {"exaggeration": CB_EXAG[emo]}
+        if self.exag:
+            for e in CB_SWEEP:
+                yield f"cpp_balayage_joie_exag{e}", PHRASES[1][1], {"exaggeration": e}
+
+    def __call__(self, text: str, opts: dict) -> np.ndarray:
+        import unicodedata
+        cmd = [self.bin, "synthesize", "--backbone", self.backbone, "--model", self.codec,
+               "--text", "[fr]" + unicodedata.normalize("NFKD", text.lower()),
+               "--ref-audio", self.ref, "--output", str(self.out)]
+        if self.exag:
+            cmd += [self.exag, str(opts["exaggeration"])]
+        r = self.sp.run(cmd, capture_output=True, text=True)
+        if r.returncode != 0:
+            raise RuntimeError(r.stderr[-1500:])
+        import soundfile as sf
+        x, self.sr = sf.read(str(self.out), dtype="float32", always_2d=True)
+        return x.mean(1)
+
+
 class Zonos:
     def __init__(self, ref: Path, repo: str):
         import torch
@@ -111,7 +155,9 @@ class Zonos:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--engine", choices=["chatterbox", "zonos"], required=True)
+    ap.add_argument("--engine", choices=["chatterbox", "zonos", "chatterbox-cpp"], required=True)
+    ap.add_argument("--tts-cli", default="codec.cpp/build/tts-cli")
+    ap.add_argument("--quant", default="q8_0")
     ap.add_argument("--zonos-repo", default="Zyphra/ZONOS3-Mini")
     ap.add_argument("--out", default="tts-wav")
     ap.add_argument("--models", default="models")
@@ -128,7 +174,12 @@ def main() -> None:
 
     asr = Parakeet(dest)
     t0 = time.perf_counter()
-    eng = Chatterbox(ref) if a.engine == "chatterbox" else Zonos(ref, a.zonos_repo)
+    if a.engine == "chatterbox":
+        eng = Chatterbox(ref)
+    elif a.engine == "chatterbox-cpp":
+        eng = ChatterboxCpp(ref, Path(a.tts_cli), dest, a.quant)
+    else:
+        eng = Zonos(ref, a.zonos_repo)
     print(f"{a.engine} chargé en {time.perf_counter() - t0:.0f} s", flush=True)
 
     results = []
