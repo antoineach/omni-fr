@@ -10,14 +10,21 @@ cd "$(dirname "$0")/.."
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || { echo "nvidia-smi absent : pilote NVIDIA ?"; exit 1; }
 
 sudo apt-get update -q
-sudo apt-get install -y -q build-essential cmake git ffmpeg python3-venv python3-dev \
+sudo apt-get install -y -q build-essential cmake git wget ffmpeg python3-venv python3-dev \
   libportaudio2 libasound2-plugins pulseaudio-utils
 
-# Boîte à outils CUDA (compilateur nvcc), si absente
+# Boîte à outils CUDA 12.8 (compilateur nvcc) depuis le dépôt NVIDIA, si absente.
+# Pas le paquet Ubuntu « nvidia-cuda-toolkit » : CUDA 12.0, incompatible avec le GCC 13 d'Ubuntu 24.04.
+export PATH=/usr/local/cuda/bin:$PATH
 if ! command -v nvcc >/dev/null; then
-  sudo apt-get install -y -q nvidia-cuda-toolkit || {
-    echo "Installer CUDA 12.x : https://developer.nvidia.com/cuda-downloads (choisir WSL-Ubuntu sous WSL)"; exit 1; }
+  if grep -qi microsoft /proc/version; then distro=wsl-ubuntu; else distro=ubuntu2404; fi
+  wget -q "https://developer.download.nvidia.com/compute/cuda/repos/${distro}/x86_64/cuda-keyring_1.1-1_all.deb" -O /tmp/cuda-keyring.deb
+  sudo dpkg -i /tmp/cuda-keyring.deb
+  sudo apt-get update -q
+  sudo apt-get install -y -q cuda-toolkit-12-8
+  grep -q /usr/local/cuda/bin ~/.bashrc || echo 'export PATH=/usr/local/cuda/bin:$PATH' >> ~/.bashrc
 fi
+nvcc --version | tail -1
 
 # Sous WSL : faire passer ALSA par le serveur son de WSLg (micro et haut-parleur Windows)
 if grep -qi microsoft /proc/version && [ ! -f ~/.asoundrc ]; then
