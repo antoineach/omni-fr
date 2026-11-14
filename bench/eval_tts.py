@@ -119,6 +119,58 @@ class ChatterboxCpp:
         return x.mean(1)
 
 
+class Zonos3Cpp:
+    """ZONOS3-Mini dans son moteur ggml natif (zonos3-cli), CPU, sans Python à l'exécution.
+
+    Émotion : contrôles « mood.* » passés par --control ID=DOSE. Les identifiants disponibles sont
+    lus dans les GGUF (chaînes « mood.… ») puis associés aux quatre émotions visées.
+    """
+
+    WANT = {"calme": ["calm", "neutral", "relaxed", "serene"], "joie": ["happy", "joy", "cheerful", "excited"],
+            "inquietude": ["worried", "anxious", "fear", "concerned", "nervous"],
+            "ironie": ["sarcastic", "ironic", "sarcasm", "dry", "amused"]}
+
+    def __init__(self, ref: Path, root: Path):
+        import re
+        import subprocess
+        self.sp, self.root, self.ref = subprocess, root, str(ref)
+        self.cli = str(next(root.glob("servers/ggml/build/**/zonos3-cli")))
+        gg = sorted((root / "servers/ggml/gguf").glob("*.gguf"))
+        print("GGUF :", [g.name for g in gg], flush=True)
+        self.model = str(next((g for g in gg if "ptq" in g.name), gg[0]))
+        ids = set()
+        for g in gg:
+            with open(g, "rb") as f:
+                head = f.read(64 << 20)
+            ids |= {m.decode() for m in re.findall(rb"mood\.[a-z_]{2,30}", head)}
+        print("contrôles mood trouvés :", sorted(ids), flush=True)
+        self.ctrl = {}
+        for emo, keys in self.WANT.items():
+            hit = next((i for k in keys for i in sorted(ids) if k in i), None)
+            if hit:
+                self.ctrl[emo] = hit
+        print("association :", self.ctrl, flush=True)
+        self.out = root / "z_tmp.wav"
+
+    def jobs(self):
+        for emo, t in PHRASES:
+            yield f"z3_{emo}", t, {"emo": emo, "dose": 1.0}
+        yield "z3_joie_sans_controle", PHRASES[1][1], {}
+        if "joie" in self.ctrl:
+            yield "z3_joie_dose2", PHRASES[1][1], {"emo": "joie", "dose": 2.0}
+
+    def __call__(self, text: str, opts: dict) -> np.ndarray:
+        cmd = [self.cli, self.model, "--tts", text, str(self.out), "--seed", "1", "--cpu", "--clone", self.ref]
+        if opts.get("emo") in self.ctrl:
+            cmd += ["--control", f"{self.ctrl[opts['emo']]}={opts['dose']}"]
+        r = self.sp.run(cmd, capture_output=True, text=True, cwd=self.root / "servers/ggml")
+        if r.returncode != 0:
+            raise RuntimeError((r.stdout + r.stderr)[-1500:])
+        import soundfile as sf
+        x, self.sr = sf.read(str(self.out), dtype="float32", always_2d=True)
+        return x.mean(1)
+
+
 class Zonos:
     def __init__(self, ref: Path, repo: str):
         import torch
@@ -155,10 +207,11 @@ class Zonos:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--engine", choices=["chatterbox", "zonos", "chatterbox-cpp"], required=True)
+    ap.add_argument("--engine", choices=["chatterbox", "zonos", "chatterbox-cpp", "zonos3-cpp"], required=True)
     ap.add_argument("--tts-cli", default="codec.cpp/build/tts-cli")
     ap.add_argument("--quant", default="q8_0")
-    ap.add_argument("--zonos-repo", default="Zyphra/ZONOS3-Mini")
+    ap.add_argument("--zonos-repo", default="Zyphra/Zonos-v0.1-transformer",
+                    help="ZONOS3-Mini n'est pas chargeable par la bibliothèque Python Zonos : voir zonos3-cpp")
     ap.add_argument("--out", default="tts-wav")
     ap.add_argument("--models", default="models")
     ap.add_argument("--json", default="")
@@ -176,6 +229,9 @@ def main() -> None:
     t0 = time.perf_counter()
     if a.engine == "chatterbox":
         eng = Chatterbox(ref)
+    elif a.engine == "zonos3-cpp":
+        eng = Zonos3Cpp(ref.resolve(), Path("zonos3").resolve())
+        eng.sr = 44100
     elif a.engine == "chatterbox-cpp":
         eng = ChatterboxCpp(ref, Path(a.tts_cli), dest, a.quant)
     else:
