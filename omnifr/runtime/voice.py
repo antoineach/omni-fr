@@ -402,19 +402,70 @@ def play(x: np.ndarray, sr: int, mic: Mic | None = None, vad: Vad | None = None,
 
 
 def _play_stream(sr: int, chunks, mic=None, vad=None, barge_in: bool = False, t0: float | None = None,
-                 verbose: bool = True) -> bool:
-    """Joue les morceaux au fil de leur arrivée. Renvoie False si l'utilisateur a coupé la parole."""
+                 verbose: bool = True, text: str = "") -> bool:
+    """Joue les morceaux au fil de leur arrivée, avec un tampon adaptatif.
+
+    Si la génération va à peine plus vite que la parole (cas de la 2070, facteur ~1), lire chaque
+    morceau dès son arrivée vide la carte son : craquements (« underrun »). On mesure donc la
+    vitesse de génération sur les premiers morceaux et on attend juste assez d'audio d'avance pour
+    finir la phrase sans trou. Renvoie False si l'utilisateur a coupé la parole.
+    """
+    import queue as _q
     import sounddevice as sd
-    first, total = True, 0
+    est_total = max(1.0, 0.075 * len(text))            # ~13 caractères par seconde parlée
+    buf: _q.Queue = _q.Queue()
+    stats = {"gen": 0, "done": False, "t_first": None}
+
+    def producer():
+        try:
+            for c in chunks:
+                if stats["t_first"] is None:
+                    stats["t_first"] = time.time()
+                stats["gen"] += len(c)
+                buf.put(c)
+        finally:
+            stats["done"] = True
+            buf.put(None)
+    threading.Thread(target=producer, daemon=True).start()
+
+    first = buf.get()
+    if first is None:
+        return True
+    if verbose and t0 is not None:
+        print(f"   [voix : premier son généré après {time.time() - t0:.2f} s]", flush=True)
+    pending = [first]
+    first_s = len(first) / sr
+    # tampon : attendre que (audio d'avance) >= (reste à générer) x (1 - vitesse relative)
+    while not stats["done"]:
+        el = max(1e-3, time.time() - stats["t_first"])
+        gen_s = stats["gen"] / sr
+        # vitesse mesurée après le premier morceau, sur au moins deux morceaux
+        speed = (gen_s - first_s) / el if gen_s >= 3 * first_s else None
+        if speed is None:
+            need = float("inf")
+        else:
+            need = 0.3 if speed >= 1.3 else max(0.3, (est_total - gen_s) * (1 - speed) / max(speed, 0.3) + 0.4)
+        if gen_s >= need:
+            break
+        try:
+            c = buf.get(timeout=0.05)
+        except _q.Empty:
+            continue
+        if c is None:
+            break
+        pending.append(c)
+    if verbose and t0 is not None:
+        print(f"   [voix : lecture après {time.time() - t0:.2f} s, {stats['gen'] / sr:.1f} s d'avance]", flush=True)
+
     if barge_in and mic and vad:
         mic.drain()
         vad.reset()
-    speech = 0.0
-    with sd.OutputStream(samplerate=sr, channels=1, dtype="float32") as out:
-        for c in chunks:
-            if first and verbose and t0 is not None:
-                print(f"   [voix : premier son après {time.time() - t0:.2f} s]", flush=True)
-                first = False
+    speech, total = 0.0, 0
+    with sd.OutputStream(samplerate=sr, channels=1, dtype="float32", latency="high") as out:
+        while True:
+            c = pending.pop(0) if pending else buf.get()
+            if c is None:
+                break
             out.write(c.reshape(-1, 1))
             total += len(c)
             if barge_in and mic and vad:
@@ -423,7 +474,10 @@ def _play_stream(sr: int, chunks, mic=None, vad=None, barge_in: bool = False, t0
                     speech = speech + len(f) / SR if vad.speaking(f) else 0.0
                 if speech >= 0.3:
                     if hasattr(chunks, "close"):
-                        chunks.close()
+                        try:
+                            chunks.close()
+                        except Exception:
+                            pass
                     return False
     if verbose and t0 is not None:
         print(f"   [voix : {total / sr:.1f} s d'audio, fini {time.time() - t0:.1f} s après la demande]", flush=True)
@@ -443,7 +497,7 @@ class Speaker:
         except Exception as e:
             print(f"   ⚠ voix : {e}", flush=True)
             return True
-        return _play_stream(sr, it, mic, vad, barge_in, t0=t0, verbose=self.verbose)
+        return _play_stream(sr, it, mic, vad, barge_in, t0=t0, verbose=self.verbose, text=text)
 
     def say(self, text: str, emotion: str, mic: Mic | None = None, vad: Vad | None = None,
             barge_in: bool = False) -> bool:
