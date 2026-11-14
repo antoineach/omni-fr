@@ -211,7 +211,7 @@ class Zonos3Server:
         import io
         import json as _json
         import soundfile as sf
-        body = {"text": text, "format": "wav", "seed": seed, "controls": MOODS.get(emotion, {})}
+        body = {"text": text, "format": "wav", "stream": False, "seed": seed, "controls": MOODS.get(emotion, {})}
         if self.ref:
             body["speaker_audio_base64"] = self.ref
         req = urllib.request.Request(f"http://127.0.0.1:{self.port}/v2/generate", data=_json.dumps(body).encode(),
