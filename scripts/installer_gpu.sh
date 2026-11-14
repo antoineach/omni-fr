@@ -45,9 +45,9 @@ pip install --no-deps openwakeword==0.6.0
 if [ "${1:-}" != "--sans-affinage" ]; then
   pip install torch --index-url https://download.pytorch.org/whl/cu128
   pip install -e ".[affinage,bancs]"
-  pip install -e ".[voix-gpu]"
 fi
 
+bash scripts/installer_voix.sh
 python -m pytest -q
 omnifr materiel
 omnifr installer

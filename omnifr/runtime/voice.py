@@ -218,51 +218,68 @@ QWEN_INSTRUCT = {"calme": "Speak in a calm, soft and reassuring tone.",
 
 
 class Qwen3TTS:
-    """Qwen3-TTS (Alibaba, Apache 2.0) sur GPU, dans le processus : le modèle reste chargé.
+    """Client du serveur Qwen3-TTS (qwen_tts_server.py), lancé dans .venv-voix.
 
-    Deux modes, car Qwen3-TTS sépare clonage et expressions :
-    - ``clone`` : modèle Base, voix clonée depuis un extrait ; l'émotion n'est pas pilotable ;
-    - ``expressif`` : modèle CustomVoice, voix prédéfinie, émotion pilotée par instruction.
-    Sur une RTX 2070 (Turing) : float16, attention SDPA ; le 0.6B laisse la place au cerveau.
+    qwen-tts exige transformers==4.57.3 : il vit dans son propre environnement Python, le modèle
+    reste chargé sur le GPU, et l'assistant lui envoie les phrases en HTTP local.
     """
 
     def __init__(self, mode: str = "expressif", size: str = "0.6B", voice_ref: Path | None = None,
-                 speaker: str = "", asr=None, device: str = "cuda:0"):
-        import torch
-        from qwen_tts import Qwen3TTSModel
-        kind = "Base" if mode == "clone" else "CustomVoice"
-        dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16
-        self.m = Qwen3TTSModel.from_pretrained(f"Qwen/Qwen3-TTS-12Hz-{size}-{kind}", device_map=device,
-                                               dtype=dtype, attn_implementation="sdpa")
-        self.mode, self.prompt = mode, None
+                 speaker: str = "", asr=None, port: int = 8095, log: Path | None = None):
+        import sys
+        repo = Path(__file__).resolve().parents[2]
+        py = repo / ".venv-voix" / "bin" / "python"
+        if not py.exists():
+            raise FileNotFoundError(f"{py} absent : lancer « bash scripts/installer_voix.sh »")
+        cmd = [str(py), str(Path(__file__).with_name("qwen_tts_server.py")), "--port", str(port), "--mode", mode,
+               "--taille", size]
         if mode == "clone":
             if not voice_ref:
                 raise ValueError("mode clone : donner --voix extrait.wav")
-            ref_text = ""
+            cmd += ["--voix", str(voice_ref)]
             if asr is not None:      # la transcription de l'extrait améliore le clonage
                 import soundfile as sf
-                x, sr = sf.read(str(voice_ref), dtype="float32", always_2d=True)
                 from bench.eval_audio import resample
-                ref_text = asr(resample(x.mean(1), sr))
-            self.prompt = self.m.create_voice_clone_prompt(ref_audio=str(voice_ref), ref_text=ref_text or None,
-                                                           x_vector_only_mode=not ref_text)
+                x, sr = sf.read(str(voice_ref), dtype="float32", always_2d=True)
+                cmd += ["--texte-voix", asr(resample(x.mean(1), sr))]
+        elif speaker:
+            cmd += ["--nom", speaker]
+        self.port = port
+        self.log = log or Path(os.devnull)
+        self.proc = subprocess.Popen(cmd, stdout=open(self.log, "w"), stderr=subprocess.STDOUT)
+        t0 = time.time()
+        while time.time() - t0 < 600:
+            if self.proc.poll() is not None:
+                tail = Path(self.log).read_text(errors="replace")[-1500:] if self.log.exists() else ""
+                raise RuntimeError(f"serveur Qwen3-TTS arrêté :\n{tail}")
+            try:
+                urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=2)
+                break
+            except Exception:
+                time.sleep(1)
         else:
-            names = []
-            for attr in ("get_supported_speakers", "get_supported_spks"):
-                if hasattr(self.m, attr):
-                    names = list(getattr(self.m, attr)())
-                    break
-            self.speaker = speaker or ("Ryan" if "Ryan" in names or not names else names[0])
-            if names:
-                print(f"voix disponibles : {', '.join(names)} ; choisie : {self.speaker}", flush=True)
+            raise TimeoutError("serveur Qwen3-TTS non prêt")
+        if self.log.exists():
+            for line in self.log.read_text(errors="replace").splitlines():
+                if line.startswith("voix disponibles"):
+                    print(line, flush=True)
 
     def synth(self, text: str, emotion: str = "neutre") -> tuple[np.ndarray, int]:
-        if self.mode == "clone":
-            wavs, sr = self.m.generate_voice_clone(text=text, language="French", voice_clone_prompt=self.prompt)
-        else:
-            wavs, sr = self.m.generate_custom_voice(text=text, language="French", speaker=self.speaker,
-                                                    instruct=QWEN_INSTRUCT.get(emotion, ""))
-        return np.asarray(wavs[0], dtype=np.float32).reshape(-1), sr
+        import io
+        import json as _json
+        import soundfile as sf
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}/tts",
+                                     data=_json.dumps({"text": text, "emotion": emotion}).encode(),
+                                     headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=300) as r:
+                x, sr = sf.read(io.BytesIO(r.read()), dtype="float32", always_2d=True)
+        except urllib.error.HTTPError as e:
+            raise RuntimeError(f"Qwen3-TTS : {e.read().decode('utf-8', 'replace')[:400]}") from None
+        return x.mean(1), sr
+
+    def close(self) -> None:
+        self.proc.terminate()
 
 
 def make_tts(root: Path, voice_ref: Path | None, gpu: bool, log: Path | None = None, engine: str = "qwen",
@@ -271,7 +288,8 @@ def make_tts(root: Path, voice_ref: Path | None, gpu: bool, log: Path | None = N
     if engine.startswith("qwen"):
         mode = "clone" if engine == "qwen-clone" else "expressif"
         try:
-            return Qwen3TTS(mode, size, voice_ref, speaker, asr=asr)
+            return Qwen3TTS(mode, size, voice_ref, speaker, asr=asr,
+                            log=(log.parent / "qwen-tts.log") if log else None)
         except Exception as e:
             print(f"Qwen3-TTS indisponible ({type(e).__name__}: {str(e)[:200]}) ; repli sur ZONOS3", flush=True)
     try:

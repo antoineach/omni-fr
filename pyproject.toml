@@ -14,8 +14,6 @@ dependencies = ["numpy", "soundfile", "huggingface_hub>=0.30", "num2words"]
 # openWakeWord s'installe à part avec --no-deps (il exige tflite-runtime, absent pour Python 3.12) :
 #   pip install --no-deps openwakeword==0.6.0
 voix = ["sounddevice", "sherpa-onnx>=1.12", "onnxruntime", "pyarrow", "tqdm", "scipy", "scikit-learn", "requests"]
-# voix Qwen3-TTS sur GPU (installer PyTorch CUDA d'abord)
-voix-gpu = ["qwen-tts"]
 # bancs complets (jeu MLS, Nemotron ASR en PyTorch)
 bancs = ["pyarrow", "transformers>=5.13.0", "accelerate"]
 # affinage (installer PyTorch CUDA d'abord, voir scripts/installer_gpu.sh)
