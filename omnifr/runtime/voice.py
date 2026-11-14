@@ -19,6 +19,7 @@ import os
 # long supprime ces craquements (au prix de ~0,1 s de délai). Réglable : OMNIFR_LATENCE_PULSE_MS.
 os.environ.setdefault("PULSE_LATENCY_MSEC", os.environ.get("OMNIFR_LATENCE_PULSE_MS", "120"))
 import queue
+import shutil
 import subprocess
 import tarfile
 import tempfile
@@ -394,28 +395,143 @@ def record_utterance(mic: Mic, vad: Vad, max_s: float = 60.0, end_silence: float
     return np.concatenate(chunks)
 
 
+def _is_wsl() -> bool:
+    try:
+        return "microsoft" in Path("/proc/version").read_text().lower()
+    except OSError:
+        return False
+
+
+class _SdOut:
+    """PortAudio -> ALSA (-> PulseAudio). Le chemin par défaut hors WSL."""
+
+    def __init__(self):
+        import sounddevice as sd
+        self.s = sd.OutputStream(samplerate=OUT_SR, channels=1, dtype="float32", latency=OUT_LATENCY)
+
+    def __enter__(self):
+        self.s.__enter__()
+        return self
+
+    def __exit__(self, *a):
+        return self.s.__exit__(*a)
+
+    def write(self, x: np.ndarray) -> None:
+        self.s.write(x.reshape(-1, 1))
+
+    def stop(self) -> None:
+        pass
+
+
+class _PacatOut:
+    """Directement vers PulseAudio (pacat), sans le greffon ALSA : sous WSLg, c'est ce greffon qui craque."""
+
+    def __enter__(self):
+        ms = os.environ.get("OMNIFR_LATENCE_PULSE_MS", "200")
+        self.p = subprocess.Popen(["pacat", "--playback", "--raw", "--format=float32le", f"--rate={OUT_SR}",
+                                   "--channels=1", f"--latency-msec={ms}", "--client-name=omnifr"],
+                                  stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        return self
+
+    def write(self, x: np.ndarray) -> None:
+        try:
+            self.p.stdin.write(np.asarray(x, np.float32).tobytes())
+        except BrokenPipeError:
+            pass
+
+    def stop(self) -> None:
+        self.p.kill()
+
+    def __exit__(self, *a):
+        if self.p.poll() is None:
+            try:
+                self.p.stdin.close()
+            except Exception:
+                pass
+            self.p.wait()
+
+
+class _WindowsOut:
+    """Lecture par Windows lui-même (PowerShell + SoundPlayer), hors de la chaîne son de WSL.
+
+    Pas de flux continu côté Windows : l'audio est découpé en segments WAV de ~2 s joués à la suite
+    par un processus PowerShell permanent. Petit blanc possible entre segments, aucun craquement.
+    """
+
+    _ps = None
+
+    @classmethod
+    def _player(cls):
+        if cls._ps is None or cls._ps.poll() is not None:
+            script = ("$p = New-Object System.Media.SoundPlayer; "
+                      "while (($l = [Console]::In.ReadLine()) -ne $null) { $p.SoundLocation = $l; $p.PlaySync(); "
+                      "Remove-Item $l -ErrorAction SilentlyContinue; [Console]::Out.WriteLine('ok') }")
+            cls._ps = subprocess.Popen(["powershell.exe", "-NoProfile", "-Command", script], stdin=subprocess.PIPE,
+                                       stdout=subprocess.PIPE, text=True)
+            win_tmp = subprocess.run(["cmd.exe", "/c", "echo %TEMP%"], capture_output=True, text=True,
+                                     cwd="/mnt/c").stdout.strip()
+            cls._dir = Path(subprocess.run(["wslpath", win_tmp], capture_output=True, text=True).stdout.strip())
+            cls._win_dir = win_tmp
+            cls._pending = 0
+        return cls._ps
+
+    def __enter__(self):
+        self.ps = self._player()
+        self.buf: list[np.ndarray] = []
+        self.n = 0
+        return self
+
+    def _flush(self) -> None:
+        import soundfile as sf
+        if not self.buf:
+            return
+        x = np.concatenate(self.buf)
+        self.buf = []
+        name = f"omnifr_{os.getpid()}_{time.time_ns()}.wav"
+        sf.write(str(self._dir / name), x, OUT_SR, subtype="PCM_16")
+        self.ps.stdin.write(f"{self._win_dir}\\{name}\n")
+        self.ps.stdin.flush()
+        type(self)._pending += 1
+
+    def write(self, x: np.ndarray) -> None:
+        self.buf.append(np.asarray(x, np.float32))
+        self.n += len(x)
+        if sum(len(b) for b in self.buf) >= 2 * OUT_SR:
+            self._flush()
+
+    def stop(self) -> None:
+        self.buf = []
+        if self._ps:
+            self._ps.kill()
+            type(self)._ps = None
+
+    def __exit__(self, *a):
+        self._flush()
+        while self._ps is not None and type(self)._pending > 0:     # attendre la fin de la lecture
+            if self.ps.stdout.readline() == "":
+                break
+            type(self)._pending -= 1
+
+
+def audio_out():
+    """Sortie choisie par OMNIFR_SORTIE_AUDIO : auto | pulse | alsa | windows.
+
+    auto = pulse (pacat) sous WSL si disponible, sinon PortAudio.
+    """
+    mode = os.environ.get("OMNIFR_SORTIE_AUDIO", "auto")
+    if mode == "windows":
+        return _WindowsOut()
+    if mode == "pulse" or (mode == "auto" and _is_wsl() and shutil.which("pacat")):
+        return _PacatOut()
+    return _SdOut()
+
+
 def play(x: np.ndarray, sr: int, mic: Mic | None = None, vad: Vad | None = None, barge_in: bool = False) -> bool:
     """Joue l'audio. Renvoie False si l'utilisateur a coupé la parole."""
-    import sounddevice as sd
-    x, sr = _to_out(np.asarray(x, np.float32).reshape(-1), sr), OUT_SR
-    sd.play(x, sr, latency=OUT_LATENCY)
-    if not (barge_in and mic and vad):
-        sd.wait()
-        return True
-    mic.drain()
-    vad.reset()
-    speech, end = 0.0, time.time() + len(x) / sr
-    while time.time() < end:
-        try:
-            frame = mic.read(timeout=0.2)
-        except queue.Empty:
-            continue
-        speech = speech + len(frame) / SR if vad.speaking(frame) else 0.0
-        if speech >= 0.3:
-            sd.stop()
-            return False
-    sd.wait()
-    return True
+    x = np.asarray(x, np.float32).reshape(-1)
+    step = int(0.2 * sr)
+    return _play_stream(sr, (x[i:i + step] for i in range(0, len(x), step)), mic, vad, barge_in,
+                        verbose=False, text="")
 
 
 def _play_stream(sr: int, chunks, mic=None, vad=None, barge_in: bool = False, t0: float | None = None,
@@ -428,7 +544,6 @@ def _play_stream(sr: int, chunks, mic=None, vad=None, barge_in: bool = False, t0
     finir la phrase sans trou. Renvoie False si l'utilisateur a coupé la parole.
     """
     import queue as _q
-    import sounddevice as sd
     est_total = max(1.0, 0.075 * len(text))            # ~13 caractères par seconde parlée
     buf: _q.Queue = _q.Queue()
     stats = {"gen": 0, "done": False, "t_first": None}
@@ -486,7 +601,7 @@ def _play_stream(sr: int, chunks, mic=None, vad=None, barge_in: bool = False, t0
         mic.drain()
         vad.reset()
     speech, total = 0.0, 0
-    with sd.OutputStream(samplerate=OUT_SR, channels=1, dtype="float32", latency=OUT_LATENCY) as out:
+    with audio_out() as out:
         pauses = 0
         while True:
             if pending:
@@ -497,19 +612,20 @@ def _play_stream(sr: int, chunks, mic=None, vad=None, barge_in: bool = False, t0
                 except _q.Empty:
                     # génération en retard : on nourrit la carte son de silence (petite pause nette)
                     # plutôt que de la laisser à vide (craquement « underrun »)
-                    out.write(np.zeros((int(0.05 * OUT_SR), 1), np.float32))
+                    out.write(np.zeros(int(0.05 * OUT_SR), np.float32))
                     pauses += 1
                     continue
             if c is None:
                 break
             # rééchantillonné vers la fréquence native de la sortie (48 kHz)
-            out.write(_to_out(c.reshape(-1), sr).reshape(-1, 1))
+            out.write(_to_out(c.reshape(-1), sr))
             total += len(c)
             if barge_in and mic and vad:
                 while not mic.q.empty():
                     f = mic.q.get_nowait()
                     speech = speech + len(f) / SR if vad.speaking(f) else 0.0
                 if speech >= 0.3:
+                    out.stop()
                     if hasattr(chunks, "close"):
                         try:
                             chunks.close()

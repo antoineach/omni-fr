@@ -606,6 +606,8 @@ def main(argv: list[str] | None = None) -> None:
         p.add_argument("--searx-url", default=os.environ.get("SEARX_URL", ""), help="instance SearXNG pour web.recherche")
 
     def voice_opts(p):
+        p.add_argument("--sortie-audio", choices=["auto", "pulse", "alsa", "windows"], default=None,
+                       help="auto : PulseAudio direct sous WSL ; windows : lecture par Windows (aucun craquement WSLg)")
         p.add_argument("--voix", default="", help="extrait WAV de 5 à 15 s de la voix à cloner (avec consentement)")
         p.add_argument("--voix-cpu", action="store_true", help="ZONOS3 sur le processeur (libère la VRAM)")
         p.add_argument("--moteur-voix", choices=["qwen", "qwen-clone", "zonos3"], default="qwen",
@@ -678,6 +680,8 @@ def main(argv: list[str] | None = None) -> None:
     p.set_defaults(f=cmd_exporter)
 
     a = ap.parse_args(argv)
+    if getattr(a, "sortie_audio", None):
+        os.environ["OMNIFR_SORTIE_AUDIO"] = a.sortie_audio
     sys.path.insert(0, str(ROOT))
     a.f(a)
 
