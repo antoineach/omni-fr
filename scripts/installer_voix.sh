@@ -3,6 +3,7 @@
 # Unsloth et Nemotron ASR. La voix tourne donc dans son propre processus, avec .venv-voix.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+command -v sox >/dev/null || sudo apt-get install -y -q sox libsox-fmt-all
 python3 -m venv .venv-voix
 .venv-voix/bin/pip install -U pip wheel
 .venv-voix/bin/pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128

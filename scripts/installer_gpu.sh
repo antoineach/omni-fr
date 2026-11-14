@@ -10,7 +10,7 @@ cd "$(dirname "$0")/.."
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || { echo "nvidia-smi absent : pilote NVIDIA ?"; exit 1; }
 
 sudo apt-get update -q
-sudo apt-get install -y -q build-essential cmake git wget curl ffmpeg python3-venv python3-dev \
+sudo apt-get install -y -q build-essential cmake git wget curl ffmpeg sox libsox-fmt-all python3-venv python3-dev \
   libportaudio2 libasound2-plugins pulseaudio-utils
 
 # Boîte à outils CUDA 12.8 (compilateur nvcc) depuis le dépôt NVIDIA, si absente.

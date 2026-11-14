@@ -25,6 +25,23 @@ from pathlib import Path
 
 import numpy as np
 
+import atexit
+
+_CHILDREN: list = []
+
+
+def _reap() -> None:
+    for p in _CHILDREN:
+        if p.poll() is None:
+            p.terminate()
+            try:
+                p.wait(timeout=10)
+            except Exception:
+                p.kill()
+
+
+atexit.register(_reap)
+
 SR = 16000
 FRAME = 1280  # 80 ms, taille attendue par openWakeWord
 PARAKEET_URL = ("https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/"
@@ -177,6 +194,7 @@ class Zonos3Server:
             cmd += ["--tts-default-voices-dir", str(dv)]
         self.proc = subprocess.Popen(cmd, cwd=root / "servers/ggml", stdout=open(log or os.devnull, "w"),
                                      stderr=subprocess.STDOUT)
+        _CHILDREN.append(self.proc)
         self.ref = base64.b64encode(Path(voice_ref).read_bytes()).decode() if voice_ref else None
         t0 = time.time()
         while time.time() - t0 < 180:
@@ -247,6 +265,7 @@ class Qwen3TTS:
         self.port = port
         self.log = log or Path(os.devnull)
         self.proc = subprocess.Popen(cmd, stdout=open(self.log, "w"), stderr=subprocess.STDOUT)
+        _CHILDREN.append(self.proc)
         t0 = time.time()
         while time.time() - t0 < 600:
             if self.proc.poll() is not None:
@@ -366,8 +385,8 @@ def play(x: np.ndarray, sr: int, mic: Mic | None = None, vad: Vad | None = None,
 class Speaker:
     """Synthétise phrase par phrase en tâche de fond pour commencer à parler plus tôt."""
 
-    def __init__(self, tts: Zonos3):
-        self.tts = tts
+    def __init__(self, tts, verbose: bool = True):
+        self.tts, self.verbose = tts, verbose
 
     def say(self, text: str, emotion: str, mic: Mic | None = None, vad: Vad | None = None,
             barge_in: bool = False) -> bool:
@@ -379,7 +398,11 @@ class Speaker:
         def worker():
             try:
                 for s in sentences:
-                    q.put(self.tts.synth(s, emotion))
+                    t0 = time.time()
+                    x, sr = self.tts.synth(s, emotion)
+                    if self.verbose:
+                        print(f"   [voix : {len(x) / sr:.1f} s d'audio en {time.time() - t0:.1f} s]", flush=True)
+                    q.put((x, sr))
             except Exception as e:
                 print(f"   ⚠ voix : {e}", flush=True)
             q.put(None)

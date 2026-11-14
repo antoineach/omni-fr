@@ -70,6 +70,8 @@ class LlamaServer:
                "-t", str(threads), "--jinja", "-np", "1"] + (extra or [])
         self.cmd = cmd
         self.proc = subprocess.Popen(cmd, stdout=open(log, "w"), stderr=subprocess.STDOUT)
+        import atexit
+        atexit.register(self.close)
         self._wait()
 
     def _wait(self, timeout: int = 600) -> None:
@@ -106,6 +108,8 @@ class LlamaServer:
         return self.chat(messages, tools)
 
     def close(self) -> None:
+        if self.proc.poll() is not None:
+            return
         self.proc.terminate()
         try:
             self.proc.wait(timeout=30)
