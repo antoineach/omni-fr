@@ -31,6 +31,9 @@ jobs:
           - {name: nemotron-bolt-e4b, repos: "unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-GGUF nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-4GB"}
           - {name: minicpm5-2b, repos: "openbmb/MiniCPM5-2B-GGUF bartowski/openbmb_MiniCPM5-2B-GGUF"}
           - {name: spark-x2.6-4b, repos: "XHToken/Spark-X2.6-4B-GGUF"}
+          - {name: nemotron-bolt-e4b-gabarit-gemma, repos: "unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-GGUF nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-4GB", gabarit: "ggml-org/gemma-4-e4b-it-GGUF"}
+          - {name: qwen3.5-4b, repos: "unsloth/Qwen3.5-4B-GGUF bartowski/Qwen_Qwen3.5-4B-GGUF Qwen/Qwen3.5-4B-GGUF"}
+          - {name: granite-4.1-8b, repos: "ibm-granite/granite-4.1-8b-GGUF unsloth/granite-4.1-8b-GGUF bartowski/ibm-granite_granite-4.1-8b-GGUF"}
     runs-on: ubuntu-24.04-arm
     name: texte ${{ matrix.name }}
     timeout-minutes: 120
@@ -57,6 +60,7 @@ jobs:
         if: ${{ inputs.modeles == '' || contains(format(' {0} ', inputs.modeles), format(' {0} ', matrix.name)) }}
         run: |
           args=""; for r in ${{ matrix.repos }}; do args="$args --repo $r"; done
+          if [ -n "${{ matrix.gabarit }}" ]; then args="$args --template-from ${{ matrix.gabarit }}"; fi
           python bench/eval_llm.py --llama llama.cpp/build/bin/llama-server $args --name ${{ matrix.name }} --quant Q4_K_M,Q4_0,Q8_0,F16 --threads 4 --json eval-${{ matrix.name }}.json
       - name: Journal du serveur (en cas d'échec)
         if: failure()

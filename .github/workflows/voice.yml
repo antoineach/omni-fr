@@ -88,7 +88,10 @@ jobs:
         run: |
           sudo apt-get update -q && sudo apt-get install -y -q espeak-ng
           pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
-          pip install git+https://github.com/Zyphra/Zonos.git
+          git clone --depth 1 https://github.com/Zyphra/Zonos.git zonos-src
+          pip install -e zonos-src
+          ls zonos-src/zonos
+          echo "PYTHONPATH=$PWD/zonos-src" >> $GITHUB_ENV
       - name: Synthèse
         run: python bench/eval_tts.py --engine ${{ matrix.engine }} --out tts-wav --json eval-tts-${{ matrix.engine }}.json
       - uses: actions/upload-artifact@v4

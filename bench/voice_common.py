@@ -18,7 +18,7 @@ PARAKEET_URL = ("https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-mod
                 "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2")
 
 # Conditions retenues : propre, brouhaha (pièce où d'autres parlent) et bruit rose.
-CONDITIONS = [("propre", None, None), ("brouhaha", 10, "brouhaha 10 dB"), ("brouhaha", 0, "brouhaha 0 dB"),
+CONDITIONS = [("propre", None, "propre"), ("brouhaha", 10, "brouhaha 10 dB"), ("brouhaha", 0, "brouhaha 0 dB"),
               ("rose", 5, "rose 5 dB")]
 
 
