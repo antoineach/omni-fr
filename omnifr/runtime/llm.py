@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -93,8 +94,12 @@ class LlamaServer:
             payload["tools"] = tools
         req = urllib.request.Request(f"http://127.0.0.1:{self.port}/v1/chat/completions",
                                      data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=600) as r:
-            out = json.loads(r.read())
+        try:
+            with urllib.request.urlopen(req, timeout=600) as r:
+                out = json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", "replace")[:800]
+            raise RuntimeError(f"llama-server {e.code} : {body}") from None
         return out["choices"][0]["message"]
 
     def __call__(self, messages: list[dict], tools: list[dict]) -> dict:

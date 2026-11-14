@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import os
 import queue
 import subprocess
 import tarfile
@@ -154,6 +155,63 @@ class Zonos3:
         if np.sqrt(np.mean(x ** 2)) < 1e-3 and seed < 4:     # sortie muette observée sans clonage : on réessaie
             return self.synth(text, emotion, seed + 1)
         return x, sr
+
+
+class Zonos3Server:
+    """ZONOS3-Mini en serveur : le modèle reste chargé (le CLI le recharge à chaque phrase).
+
+    La voix est fixée par un extrait de référence et une graine constante : sans cela ZONOS3 tire
+    une voix différente à chaque requête.
+    """
+
+    def __init__(self, root: Path, voice_ref: Path | None = None, gpu: bool = True, port: int = 1919,
+                 log: Path | None = None):
+        import base64
+        self.root, self.port = root, port
+        exe = str(next(root.glob("servers/ggml/build*/**/zonos3-server")))
+        cmd = [exe, str(root / "servers/ggml/gguf/backbone-ptq.gguf"), "--port", str(port),
+               "--gpu" if gpu else "--cpu"]
+        dv = root / "assets/default_voices"
+        if dv.exists():
+            cmd += ["--tts-default-voices-dir", str(dv)]
+        self.proc = subprocess.Popen(cmd, cwd=root / "servers/ggml", stdout=open(log or os.devnull, "w"),
+                                     stderr=subprocess.STDOUT)
+        self.ref = base64.b64encode(Path(voice_ref).read_bytes()).decode() if voice_ref else None
+        t0 = time.time()
+        while time.time() - t0 < 180:
+            if self.proc.poll() is not None:
+                raise RuntimeError("zonos3-server s'est arrêté au démarrage")
+            try:
+                urllib.request.urlopen(f"http://127.0.0.1:{port}/v2/capabilities", timeout=3)
+                return
+            except Exception:
+                time.sleep(0.5)
+        raise TimeoutError("zonos3-server non prêt")
+
+    def synth(self, text: str, emotion: str = "neutre", seed: int = 7) -> tuple[np.ndarray, int]:
+        import io
+        import json as _json
+        import soundfile as sf
+        body = {"text": text, "format": "wav", "seed": seed, "controls": MOODS.get(emotion, {})}
+        if self.ref:
+            body["speaker_audio_base64"] = self.ref
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}/v2/generate", data=_json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=120) as r:
+            x, sr = sf.read(io.BytesIO(r.read()), dtype="float32", always_2d=True)
+        return x.mean(1), sr
+
+    def close(self) -> None:
+        self.proc.terminate()
+
+
+def make_tts(root: Path, voice_ref: Path | None, gpu: bool, log: Path | None = None):
+    """Serveur si possible, sinon le CLI."""
+    try:
+        return Zonos3Server(root, voice_ref, gpu, log=log)
+    except Exception as e:
+        print(f"zonos3-server indisponible ({e}) ; repli sur zonos3-cli (plus lent)", flush=True)
+        return Zonos3(root, voice_ref, gpu)
 
 
 class Mic:

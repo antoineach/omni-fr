@@ -35,6 +35,19 @@ jobs:
         run: |
           printf '%s\n' "Allume la cuisine et la chambre." "Désactive l'alarme." "Oui." \
             "Quel temps demain à Bordeaux ?" "Merci Jarvis." "" | omnifr discuter --ngl 0
+      - name: Serveur ZONOS3 (voix fixe, modèle gardé en mémoire)
+        run: |
+          python - <<'PY'
+          import json, time
+          from pathlib import Path
+          from omnifr.runtime import voice
+          d = Path.home() / "omnifr-modeles"; cfg = json.loads((d / "config.json").read_text())
+          t = time.time(); tts = voice.make_tts(Path(cfg["zonos3"]), None, gpu=False, log=d / "zonos3.log")
+          print(type(tts).__name__, f"démarré en {time.time()-t:.1f} s")
+          for txt in ["Bonjour.", "Il fait beau à Pessac.", "La porte est verrouillée."]:
+              t = time.time(); x, sr = tts.synth(txt, "calme"); print(f"{len(x)/sr:.1f} s audio en {time.time()-t:.1f} s")
+          PY
+          tail -20 ~/omnifr-modeles/zonos3.log || true
       - name: omnifr tester (CPU)
         run: omnifr tester --voix-cpu --ngl 0
       - name: Chaîne audio sur fichiers

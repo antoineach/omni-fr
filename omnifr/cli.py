@@ -362,13 +362,18 @@ def cmd_discuter(a) -> None:
     if a.parler:
         from omnifr.runtime import voice
         print("chargement de la voix…", flush=True)
-        ref = Path(a.voix) if a.voix else None
-        spk = voice.Speaker(voice.Zonos3(Path(cfg["zonos3"]), voice_ref=ref, gpu=not a.voix_cpu))
+        ref = Path(a.voix) if a.voix else (Path(cfg["voix_reference"]) if cfg.get("voix_reference") else None)
+        spk = voice.Speaker(voice.make_tts(Path(cfg["zonos3"]), ref, gpu=not a.voix_cpu, log=home(a) / "zonos3.log"))
     with _brain(a, cfg) as llm:
         orch = _orchestrator(a, llm, on_wait=lambda s: print(f"Jarvis : {s}"))
         print("Écrivez vos demandes (vide pour quitter).")
         while (u := input("Vous : ").strip()):
-            r = orch.turn(u)
+            try:
+                r = orch.turn(u)
+            except Exception as e:
+                print(f"   ⚠ {e}")
+                orch.history = orch.history[:-1] if orch.history and orch.history[-1]["role"] == "user" else orch.history
+                continue
             for act in r.actions:
                 print(f"   ↳ {act['appel']['name']} {json.dumps(act['appel']['args'], ensure_ascii=False)} -> {act['statut']}")
             for b in r.bloques:
@@ -384,7 +389,8 @@ def cmd_assistant(a) -> None:
     d = home(a)
     print("chargement de l'oreille, du mot d'éveil et de la voix…", flush=True)
     asr, vad, wake = voice.Parakeet(d / "asr"), voice.Vad(d / "asr"), voice.WakeWord(threshold=a.seuil)
-    tts = voice.Zonos3(Path(cfg["zonos3"]), voice_ref=Path(a.voix) if a.voix else None, gpu=not a.voix_cpu)
+    ref = Path(a.voix) if a.voix else (Path(cfg["voix_reference"]) if cfg.get("voix_reference") else None)
+    tts = voice.make_tts(Path(cfg["zonos3"]), ref, gpu=not a.voix_cpu, log=d / "zonos3.log")
     spk = voice.Speaker(tts)
     with _brain(a, cfg) as llm:
         mic = voice.Mic(device=a.micro)
