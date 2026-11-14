@@ -108,7 +108,7 @@ def cmd_materiel(a) -> None:
     g = gpu()
     print("GPU :", g or "aucun GPU NVIDIA détecté (nvidia-smi absent)")
     print("profil conseillé :", auto_profile())
-    for tool in ("cmake", "git", "nvcc", "ffmpeg"):
+    for tool in ("cmake", "git", "nvcc", "ffmpeg", "cargo"):
         print(f"{tool:<8}", shutil.which(tool) or "ABSENT")
     if cfg_path(a).exists():
         print(json.dumps(load_cfg(a), indent=2, ensure_ascii=False))
@@ -133,7 +133,14 @@ def cmd_installer(a) -> None:
     cfg["llama_bin"] = str(Path(cfg["llama_server"]).parent)
     cfg["llama_src"] = str(lc)
 
-    # 2. ZONOS3-Mini, moteur ggml natif
+    # 2. ZONOS3-Mini, moteur ggml natif (sa normalisation de texte est en Rust : cargo requis)
+    cargo_bin = Path.home() / ".cargo" / "bin"
+    if cargo_bin.exists() and str(cargo_bin) not in os.environ["PATH"]:
+        os.environ["PATH"] = f"{cargo_bin}{os.pathsep}{os.environ['PATH']}"
+    if not shutil.which("cargo"):
+        raise SystemExit("cargo (Rust) manquant pour ZONOS3. Installer puis relancer :\n"
+                         "  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y\n"
+                         "  . ~/.cargo/env && omnifr installer")
     z = d / "zonos3"
     if not z.exists():
         sh(["git", "clone", "--depth", "1", "https://github.com/Zyphra/ZONOS3-Mini", str(z)])

@@ -10,7 +10,7 @@ cd "$(dirname "$0")/.."
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || { echo "nvidia-smi absent : pilote NVIDIA ?"; exit 1; }
 
 sudo apt-get update -q
-sudo apt-get install -y -q build-essential cmake git wget ffmpeg python3-venv python3-dev \
+sudo apt-get install -y -q build-essential cmake git wget curl ffmpeg python3-venv python3-dev \
   libportaudio2 libasound2-plugins pulseaudio-utils
 
 # Boîte à outils CUDA 12.8 (compilateur nvcc) depuis le dépôt NVIDIA, si absente.
@@ -25,6 +25,12 @@ if ! command -v nvcc >/dev/null; then
   grep -q /usr/local/cuda/bin ~/.bashrc || echo 'export PATH=/usr/local/cuda/bin:$PATH' >> ~/.bashrc
 fi
 nvcc --version | tail -1
+
+# Rust (cargo) : la normalisation de texte de ZONOS3 est écrite en Rust
+if ! command -v cargo >/dev/null && [ ! -x ~/.cargo/bin/cargo ]; then
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+fi
+export PATH="$HOME/.cargo/bin:$PATH"
 
 # Sous WSL : faire passer ALSA par le serveur son de WSLg (micro et haut-parleur Windows)
 if grep -qi microsoft /proc/version && [ ! -f ~/.asoundrc ]; then
