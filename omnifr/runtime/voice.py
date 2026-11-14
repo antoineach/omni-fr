@@ -48,6 +48,33 @@ def _reap() -> None:
 
 atexit.register(_reap)
 
+
+def _exit_on_signal() -> None:
+    """Fermer le terminal (SIGHUP) ou tuer le programme (SIGTERM) doit aussi arrêter les serveurs enfants."""
+    import signal
+    import sys
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        try:
+            signal.signal(sig, lambda *_: sys.exit(0))
+        except (ValueError, OSError, AttributeError):
+            pass
+
+
+_exit_on_signal()
+
+
+def _free_port() -> int:
+    import socket
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _kill_orphans(pattern: str) -> None:
+    """Arrête un serveur de voix resté d'une session précédente (il garde de la VRAM)."""
+    subprocess.run(["pkill", "-f", pattern], capture_output=True)
+    time.sleep(0.5)
+
 SR = 16000
 FRAME = 1280  # 80 ms, taille attendue par openWakeWord
 PARAKEET_URL = ("https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/"
@@ -252,6 +279,8 @@ class Qwen3TTS:
                  speaker: str = "", asr=None, port: int = 8095, log: Path | None = None, fidele: bool = False,
                  backend: str = "torch"):
         import sys
+        _kill_orphans("qwen_tts_server.py")
+        port = _free_port()
         repo = Path(__file__).resolve().parents[2]
         py = repo / ".venv-voix" / "bin" / "python"
         if not py.exists():
