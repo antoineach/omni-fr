@@ -44,7 +44,9 @@ fi
 python -m pytest -q
 omnifr materiel
 omnifr installer
+omnifr telecharger
 echo
 echo "Prêt. Activer l'environnement : . .venv/bin/activate"
+echo "  omnifr tester --micro-test   # vérifie toute la chaîne, WAV dans ~/omnifr-modeles/test"
 echo "  omnifr discuter      # au clavier"
 echo "  omnifr assistant     # à la voix (« Hey Jarvis »)"

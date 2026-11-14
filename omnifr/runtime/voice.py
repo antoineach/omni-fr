@@ -117,11 +117,18 @@ class Zonos3:
         self.model = str(root / "servers/ggml/gguf/backbone-ptq.gguf")
         self.dev = "--gpu" if gpu else "--cpu"
         self.emb: Path | None = None
+        self.clone_ref: Path | None = None
         if voice_ref:
-            self.emb = Path(voice_ref).with_suffix(".emb.npy")
-            if not self.emb.exists():
-                out = Path(tempfile.mkstemp(suffix=".wav")[1])
-                self._run(["Bonjour.", str(out), "--clone", str(voice_ref), "--save-speaker-embedding", str(self.emb)])
+            emb = Path(voice_ref).with_suffix(".emb.npy")
+            try:
+                if not emb.exists():
+                    out = Path(tempfile.mkstemp(suffix=".wav")[1])
+                    self._run(["Bonjour.", str(out), "--clone", str(voice_ref), "--save-speaker-embedding", str(emb)])
+                self.emb = emb
+            except RuntimeError as e:
+                # repli : clonage recalculé à chaque phrase (plus lent, mais vérifié au banc)
+                print(f"empreinte de voix non enregistrée ({str(e)[:120]}) ; clonage à chaque phrase", flush=True)
+                self.clone_ref = Path(voice_ref)
 
     def _run(self, args: list[str]) -> None:
         r = subprocess.run([self.cli, self.model, "--tts"] + args + [self.dev], capture_output=True, text=True,
@@ -136,6 +143,8 @@ class Zonos3:
         args = [text, str(out), "--seed", str(seed)]
         if self.emb:
             args += ["--speaker-embedding", str(self.emb)]
+        elif self.clone_ref:
+            args += ["--clone", str(self.clone_ref)]
         for k, v in MOODS.get(emotion, {}).items():
             args += ["--control", f"{k}={v}"]
         self._run(args)

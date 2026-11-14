@@ -17,8 +17,8 @@ import random
 from pathlib import Path
 
 PROFILES = {
-    "2070": {"base": "unsloth/Qwen3.5-4B", "max_len": 2048, "batch": 1, "accum": 8, "r": 16, "bf16": False},
-    "5000": {"base": "nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-BF16", "max_len": 4096, "batch": 2, "accum": 8, "r": 32,
+    "2070": {"base": "unsloth/Qwen3.5-4B", "repli": ["Qwen/Qwen3.5-4B"], "max_len": 2048, "batch": 1, "accum": 8, "r": 16, "bf16": False},
+    "5000": {"base": "nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-BF16", "repli": ["google/gemma-4-E4B-it"], "max_len": 4096, "batch": 2, "accum": 8, "r": 32,
              "bf16": True},
 }
 

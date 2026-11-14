@@ -26,7 +26,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/omnifr-modeles
-          key: omnifr-cli-v1-${{ runner.arch }}
+          key: omnifr-cli-v2-${{ runner.arch }}
       - name: omnifr installer --cpu
         run: |
           omnifr materiel
@@ -35,6 +35,8 @@ jobs:
         run: |
           printf '%s\n' "Allume la cuisine et la chambre." "Désactive l'alarme." "Oui." \
             "Quel temps demain à Bordeaux ?" "Merci Jarvis." "" | omnifr discuter --ngl 0
+      - name: omnifr tester (CPU)
+        run: omnifr tester --voix-cpu --ngl 0
       - name: Chaîne audio sur fichiers
         run: |
           python - <<'PY'
