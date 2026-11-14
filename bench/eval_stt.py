@@ -61,10 +61,10 @@ class Nemotron:
 class LFM3:
     name = "lfm3-audio"
 
-    def __init__(self, binp: Path, model: Path, mmproj: Path, threads: int, port: int = 8089):
+    def __init__(self, binp: Path, model: Path, mmproj: Path, threads: int, port: int = 8089, ngl: int = 0):
         server = [str(binp / "llama-server")] if (binp / "llama-server").exists() else [str(binp / "llama"), "serve"]
         cmd = server + ["-m", str(model), "-mm", str(mmproj), "--port", str(port), "-c", "4096",
-                        "-t", str(threads), "-np", "1"]
+                        "-t", str(threads), "-np", "1"] + (["-ngl", str(ngl)] if ngl else [])
         self.port = port
         self.proc = subprocess.Popen(cmd, stdout=open("serveur-stt.log", "w"), stderr=subprocess.STDOUT)
         wait_ready(port, self.proc)
@@ -139,6 +139,7 @@ def main() -> None:
     ap.add_argument("--moteurs", default="parakeet-v3-int8 nemotron-3.5-streaming lfm3-audio")
     # ex. --moteurs "gtcrn+parakeet gtcrn+lfm3-audio" pour mesurer le débruitage
     ap.add_argument("--models", default="models")
+    ap.add_argument("--ngl", type=int, default=0, help="couches de LFM3-Audio sur GPU")
     ap.add_argument("--json", default="")
     a = ap.parse_args()
 
@@ -163,10 +164,10 @@ def main() -> None:
     factories = {
         "parakeet-v3-int8": lambda: Parakeet(dest, a.threads),
         "nemotron-3.5-streaming": lambda: Nemotron(a.threads),
-        "lfm3-audio": lambda: LFM3(binp, model, mmproj, a.threads),
+        "lfm3-audio": lambda: LFM3(binp, model, mmproj, a.threads, ngl=a.ngl),
         "gtcrn+parakeet": lambda: Chain("gtcrn+parakeet", Gtcrn(dest, a.threads), Parakeet(dest, a.threads)),
         "gtcrn+lfm3-audio": lambda: Chain("gtcrn+lfm3-audio", Gtcrn(dest, a.threads),
-                                          LFM3(binp, model, mmproj, a.threads)),
+                                          LFM3(binp, model, mmproj, a.threads, ngl=a.ngl)),
     }
     for name in wanted:
         print(f"\n=== {name} ===", flush=True)

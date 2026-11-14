@@ -1,0 +1,54 @@
+# Vérifie la CLI de bout en bout sur CPU (sans GPU ni micro) : installation, discussion au
+# clavier avec le vrai cerveau, et la chaîne audio sur fichiers (voix ZONOS3 -> Parakeet).
+name: cli
+
+on:
+  workflow_dispatch:
+  push:
+    paths: ["omnifr/**", "pyproject.toml", ".github/workflows/cli.yml"]
+
+jobs:
+  cli:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Dépendances
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q ffmpeg libportaudio2
+          pip install -e ".[voix,dev]"
+          pip install --no-deps openwakeword==0.6.0
+      - run: python -m pytest -q
+      - name: Cache des binaires et modèles
+        uses: actions/cache@v4
+        with:
+          path: ~/omnifr-modeles
+          key: omnifr-cli-v1-${{ runner.arch }}
+      - name: omnifr installer --cpu
+        run: |
+          omnifr materiel
+          omnifr installer --cpu --profil 2070
+      - name: omnifr discuter (demandes au clavier)
+        run: |
+          printf '%s\n' "Allume la cuisine et la chambre." "Désactive l'alarme." "Oui." \
+            "Quel temps demain à Bordeaux ?" "Merci Jarvis." "" | omnifr discuter --ngl 0
+      - name: Chaîne audio sur fichiers
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from omnifr.runtime import voice
+          d = Path.home() / "omnifr-modeles"
+          import json; cfg = json.loads((d / "config.json").read_text())
+          tts = voice.Zonos3(Path(cfg["zonos3"]), gpu=False)
+          import time; t = time.time()
+          x, sr = tts.synth("Bonsoir. La porte d'entrée est verrouillée.", "calme")
+          print(f"voix : {len(x)/sr:.1f} s en {time.time()-t:.1f} s")
+          from bench.eval_audio import resample
+          asr = voice.Parakeet(d / "asr")
+          print("transcription :", asr(resample(x, sr)))
+          w = voice.WakeWord(); import numpy as np
+          print("mot d'éveil chargé, silence ->", w(np.zeros(1280, np.float32)))
+          PY

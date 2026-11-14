@@ -255,7 +255,9 @@ def classify(calls: list[dict]) -> str:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--llama", required=True, help="binaire « llama » (sous-commande serve) ou llama-server")
-    ap.add_argument("--repo", action="append", required=True, help="dépôt(s) HF, essayés dans l'ordre")
+    ap.add_argument("--repo", action="append", default=[], help="dépôt(s) HF, essayés dans l'ordre")
+    ap.add_argument("--gguf", default="", help="fichier GGUF local (remplace --repo)")
+    ap.add_argument("--ngl", type=int, default=0, help="couches sur GPU (0 = CPU)")
     ap.add_argument("--quant", default="Q4_K_M")
     ap.add_argument("--name", required=True)
     ap.add_argument("--threads", type=int, default=4)
@@ -268,9 +270,13 @@ def main() -> None:
     ap.add_argument("--json", default="")
     a = ap.parse_args()
 
-    model = download(a.repo, a.quant, Path(a.models))
+    if not (a.gguf or a.repo):
+        sys.exit("--gguf ou --repo requis")
+    model = Path(a.gguf) if a.gguf else download(a.repo, a.quant, Path(a.models))
     exe = [a.llama] if a.llama.endswith("server") else [a.llama, "serve"]
     cmd = exe + ["-m", str(model), "--port", str(a.port), "-c", "8192", "-t", str(a.threads), "--jinja", "-np", "1"]
+    if a.ngl:
+        cmd += ["-ngl", str(a.ngl)]
     if a.template_from:
         if a.template_from.endswith(".gguf"):
             repo, fname = a.template_from.rsplit("/", 1)

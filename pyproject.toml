@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "omnifr"
+version = "0.2.0"
+description = "Assistant vocal domotique français : bancs, assistant vocal, distillation et affinage"
+requires-python = ">=3.10"
+dependencies = ["numpy", "soundfile", "huggingface_hub>=0.30", "num2words"]
+
+[project.optional-dependencies]
+# assistant vocal : micro, VAD, transcription, dépendances d'openWakeWord.
+# openWakeWord s'installe à part avec --no-deps (il exige tflite-runtime, absent pour Python 3.12) :
+#   pip install --no-deps openwakeword==0.6.0
+voix = ["sounddevice", "sherpa-onnx>=1.12", "onnxruntime", "tqdm", "scipy", "scikit-learn", "requests"]
+# bancs complets (jeu MLS, Nemotron ASR en PyTorch)
+bancs = ["pyarrow", "transformers>=5.13.0", "accelerate"]
+# affinage (installer PyTorch CUDA d'abord, voir scripts/installer_gpu.sh)
+affinage = ["unsloth", "datasets", "trl"]
+dev = ["pytest"]
+
+[project.scripts]
+omnifr = "omnifr.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["omnifr*", "bench*"]

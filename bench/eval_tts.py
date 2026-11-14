@@ -134,11 +134,12 @@ class Zonos3Cpp:
             "inquietude": ["worried", "anxious", "fear", "concerned", "nervous"],
             "ironie": ["sarcastic", "ironic", "sarcasm", "dry", "amused"]}
 
-    def __init__(self, ref: Path, root: Path):
+    def __init__(self, ref: Path, root: Path, gpu: bool = False):
         import re
+        self.dev = "--gpu" if gpu else "--cpu"
         import subprocess
         self.sp, self.root, self.ref = subprocess, root, str(ref)
-        self.cli = str(next(root.glob("servers/ggml/build/**/zonos3-cli")))
+        self.cli = str(next(root.glob("servers/ggml/build*/**/zonos3-cli")))
         gg = sorted((root / "servers/ggml/gguf").glob("*.gguf"))
         print("GGUF :", [g.name for g in gg], flush=True)
         self.model = str(next((g for g in gg if g.name == "backbone-ptq.gguf"),
@@ -183,7 +184,7 @@ class Zonos3Cpp:
         yield "z3_joie_dose_x0.5", PHRASES[1][1], {"emo": "joie", "dose": 0.5, "seed": 2}
 
     def __call__(self, text: str, opts: dict) -> np.ndarray:
-        cmd = [self.cli, self.model, "--tts", text, str(self.out), "--seed", str(opts.get("seed", 1)), "--cpu"]
+        cmd = [self.cli, self.model, "--tts", text, str(self.out), "--seed", str(opts.get("seed", 1)), self.dev]
         if self.use_clone:
             cmd += ["--clone", self.ref]
         for k, v in self.ctrl.get(opts.get("emo"), {}).items():
@@ -236,6 +237,8 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--engine", choices=["chatterbox", "zonos", "chatterbox-cpp", "zonos3-cpp"], required=True)
     ap.add_argument("--tts-cli", default="codec.cpp/build/tts-cli")
+    ap.add_argument("--zonos3-root", default="zonos3")
+    ap.add_argument("--zonos3-gpu", action="store_true")
     ap.add_argument("--quant", default="q8_0")
     ap.add_argument("--zonos-repo", default="Zyphra/Zonos-v0.1-transformer",
                     help="ZONOS3-Mini n'est pas chargeable par la bibliothèque Python Zonos : voir zonos3-cpp")
@@ -257,7 +260,7 @@ def main() -> None:
     if a.engine == "chatterbox":
         eng = Chatterbox(ref)
     elif a.engine == "zonos3-cpp":
-        eng = Zonos3Cpp(ref.resolve(), Path("zonos3").resolve())
+        eng = Zonos3Cpp(ref.resolve(), Path(a.zonos3_root).resolve(), gpu=a.zonos3_gpu)
         eng.sr = 44100
     elif a.engine == "chatterbox-cpp":
         eng = ChatterboxCpp(ref, Path(a.tts_cli), dest, a.quant)
