@@ -77,7 +77,13 @@ def load_cfg(a) -> dict:
 
 
 def save_cfg(a, cfg: dict) -> None:
-    cfg_path(a).write_text(json.dumps(cfg, indent=2, ensure_ascii=False))
+    """Fusionne avec le fichier actuel : « installer » et « telecharger » peuvent tourner en parallèle."""
+    p = cfg_path(a)
+    cur = json.loads(p.read_text()) if p.exists() else {}
+    cur.update(cfg)
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps(cur, indent=2, ensure_ascii=False))
+    tmp.replace(p)
 
 
 def hf_file(repo: str, quant: str, dest: Path) -> Path:
@@ -155,12 +161,15 @@ def cmd_installer(a) -> None:
 
 def cmd_telecharger(a) -> None:
     """Tout ce que les autres commandes chargeraient à la demande, téléchargé d'avance."""
-    cfg = load_cfg(a)
+    # indépendant d'« installer » : peut tourner avant ou en même temps
+    cfg = json.loads(cfg_path(a).read_text()) if cfg_path(a).exists() else {}
+    cfg.setdefault("profil", auto_profile())
     d, profile = home(a), cfg["profil"]
     from huggingface_hub import hf_hub_download, snapshot_download
     print("1/5 enseignant pour la distillation", flush=True)
     repo, quant = TEACHERS[profile]
     cfg["enseignant"] = str(hf_file(repo, quant, d / "enseignant"))
+    save_cfg(a, cfg)
     print("2/5 modèle de base pour l'affinage", flush=True)
     from omnifr.train.sft import PROFILES
     base = PROFILES[profile]["base"]
