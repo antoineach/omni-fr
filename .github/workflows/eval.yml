@@ -7,6 +7,11 @@ name: eval
 
 on:
   workflow_dispatch:
+    inputs:
+      audio:
+        description: "Lancer aussi l'évaluation audio"
+        type: boolean
+        default: false
 
 env:
   LLAMA_CPP_COMMIT: 8ca5a80
@@ -20,6 +25,8 @@ jobs:
           - {name: lfm3-1.7b, repos: "LiquidAI/LFM3-1.7B-GGUF bartowski/LFM3-1.7B-GGUF"}
           - {name: gemma4-e4b, repos: "ggml-org/gemma-4-e4b-it-GGUF bartowski/google_gemma-4-E4B-it-GGUF"}
           - {name: qwen3.5-9b, repos: "unsloth/Qwen3.5-9B-GGUF bartowski/Qwen_Qwen3.5-9B-GGUF"}
+          - {name: nemotron-bolt-e4b, repos: "unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-GGUF nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-4GB"}
+          - {name: minicpm5-2b, repos: "openbmb/MiniCPM5-2B-GGUF bartowski/openbmb_MiniCPM5-2B-GGUF"}
     runs-on: ubuntu-24.04-arm
     name: texte ${{ matrix.name }}
     timeout-minutes: 120
@@ -45,7 +52,7 @@ jobs:
       - name: Évaluation
         run: |
           args=""; for r in ${{ matrix.repos }}; do args="$args --repo $r"; done
-          python bench/eval_llm.py --llama llama.cpp/build/bin/llama-server $args --name ${{ matrix.name }} --threads 4 --json eval-${{ matrix.name }}.json
+          python bench/eval_llm.py --llama llama.cpp/build/bin/llama-server $args --name ${{ matrix.name }} --quant Q4_K_M,Q4_0,Q8_0,F16 --threads 4 --json eval-${{ matrix.name }}.json
       - name: Journal du serveur (en cas d'échec)
         if: failure()
         run: tail -n 80 serveur-*.log || true
@@ -56,6 +63,7 @@ jobs:
           path: eval-*.json
 
   audio:
+    if: ${{ inputs.audio }}
     runs-on: ubuntu-24.04-arm
     name: audio lfm3-audio-2b
     timeout-minutes: 120
