@@ -175,14 +175,15 @@ class Zonos3Cpp:
         self.use_clone = self.ok.get("francais+clone", False)
 
     def jobs(self):
-        for emo, t in PHRASES:
-            yield f"z3_{emo}", t, {"emo": emo, "dose": 1.0}
-        yield "z3_joie_sans_controle", PHRASES[1][1], {}
-        if "joie" in self.ctrl:
-            yield "z3_joie_dose_x0.5", PHRASES[1][1], {"emo": "joie", "dose": 0.5}
+        for seed in (1, 2):
+            for emo, t in PHRASES:
+                yield f"z3_{emo}_graine{seed}", t, {"emo": emo, "dose": 1.0, "seed": seed}
+        for seed in (1, 2, 3):
+            yield f"z3_joie_sans_controle_graine{seed}", PHRASES[1][1], {"seed": seed}
+        yield "z3_joie_dose_x0.5", PHRASES[1][1], {"emo": "joie", "dose": 0.5, "seed": 2}
 
     def __call__(self, text: str, opts: dict) -> np.ndarray:
-        cmd = [self.cli, self.model, "--tts", text, str(self.out), "--seed", "1", "--cpu"]
+        cmd = [self.cli, self.model, "--tts", text, str(self.out), "--seed", str(opts.get("seed", 1)), "--cpu"]
         if self.use_clone:
             cmd += ["--clone", self.ref]
         for k, v in self.ctrl.get(opts.get("emo"), {}).items():
@@ -275,13 +276,14 @@ def main() -> None:
             hyp = asr(resample(w, eng.sr))
             r = {"fichier": f"{a.engine}_{label}.wav", "texte": text, "options": opts,
                  "duree_s": round(dur, 2), "calcul_s": round(dt, 1), "facteur_temps_reel": round(dt / dur, 2),
-                 "wer": round(wer([text], [hyp]), 3), "transcription": normalize_fr(hyp)}
+                 "wer": round(wer([text], [hyp]), 3), "transcription": normalize_fr(hyp),
+                 "rms": round(float(np.sqrt(np.mean(w ** 2))), 4)}
         except Exception:
             traceback.print_exc()
             r = {"fichier": None, "texte": text, "erreur": traceback.format_exc(limit=2)}
         results.append(r)
         print(f"{label:<26} {r.get('duree_s', '?')} s audio, temps réel x{r.get('facteur_temps_reel', '?')}, "
-              f"WER {r.get('wer', '?')}\n    entendu : {r.get('transcription', '')}", flush=True)
+              f"WER {r.get('wer', '?')}, rms {r.get('rms', '?')}\n    entendu : {r.get('transcription', '')}", flush=True)
 
     print("RESUME_TTS", json.dumps({r["fichier"]: [r.get("facteur_temps_reel"), r.get("wer")] for r in results},
                                    ensure_ascii=False))

@@ -107,6 +107,7 @@ jobs:
       - name: ZONOS3-Mini, moteur ggml natif
         if: matrix.engine == 'zonos3-cpp'
         run: |
+          sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
           git clone --depth 1 https://github.com/Zyphra/ZONOS3-Mini zonos3
           git -C zonos3 submodule update --init --depth 1 servers/ggml/ggml third_party/zyphra-textnorm third_party/fusealign-multilingual
           cmake -S zonos3/servers/ggml -B zonos3/servers/ggml/build -DCMAKE_BUILD_TYPE=Release
