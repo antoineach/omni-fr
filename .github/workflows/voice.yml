@@ -15,6 +15,9 @@ on:
       tts:
         type: boolean
         default: true
+      moteurs_tts:
+        description: "Liste JSON des moteurs TTS"
+        default: '["chatterbox", "zonos"]'
 
 env:
   LLAMA_CPP_COMMIT: 8ca5a80
@@ -63,7 +66,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        engine: [chatterbox, zonos]
+        engine: ${{ fromJSON(inputs.moteurs_tts) }}
     runs-on: ubuntu-24.04-arm
     name: tts ${{ matrix.engine }}
     timeout-minutes: 150
@@ -76,7 +79,10 @@ jobs:
         run: pip install huggingface_hub numpy soundfile pyarrow num2words sherpa-onnx
       - name: Chatterbox
         if: matrix.engine == 'chatterbox'
-        run: pip install chatterbox-tts
+        run: |
+          pip install chatterbox-tts
+          # chatterbox fige numpy 1.26 ; pyarrow récent exige numpy 2
+          pip install "pyarrow<18"
       - name: Zonos
         if: matrix.engine == 'zonos'
         run: |
