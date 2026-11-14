@@ -358,6 +358,12 @@ def _orchestrator(a, llm, on_wait=None):
 
 def cmd_discuter(a) -> None:
     cfg = load_cfg(a)
+    spk = None
+    if a.parler:
+        from omnifr.runtime import voice
+        print("chargement de la voix…", flush=True)
+        ref = Path(a.voix) if a.voix else None
+        spk = voice.Speaker(voice.Zonos3(Path(cfg["zonos3"]), voice_ref=ref, gpu=not a.voix_cpu))
     with _brain(a, cfg) as llm:
         orch = _orchestrator(a, llm, on_wait=lambda s: print(f"Jarvis : {s}"))
         print("Écrivez vos demandes (vide pour quitter).")
@@ -368,6 +374,8 @@ def cmd_discuter(a) -> None:
             for b in r.bloques:
                 print(f"   ⛔ bloqué : {b['name']} {json.dumps(b['args'], ensure_ascii=False)}")
             print(f"Jarvis [{r.emotion}] : {r.text}")
+            if spk and r.text:
+                spk.say(r.text, r.emotion)
 
 
 def cmd_assistant(a) -> None:
@@ -500,6 +508,9 @@ def main(argv: list[str] | None = None) -> None:
 
     p = sub.add_parser("discuter", help="l'assistant au clavier")
     runtime_opts(p)
+    p.add_argument("--parler", action="store_true", help="lire les réponses à voix haute (ZONOS3)")
+    p.add_argument("--voix", default="", help="extrait WAV de la voix à cloner")
+    p.add_argument("--voix-cpu", action="store_true", help="ZONOS3 sur le processeur (libère la VRAM)")
     p.set_defaults(f=cmd_discuter)
 
     p = sub.add_parser("assistant", help="l'assistant à la voix")
