@@ -435,6 +435,8 @@ def cmd_assistant(a) -> None:
                 print(f"   ↳ {act['appel']['name']} {json.dumps(act['appel']['args'], ensure_ascii=False)} -> {act['statut']}")
             print(f"Jarvis [{r.emotion}] : {r.text}", flush=True)
             finished = spk.say(r.text, r.emotion, mic=mic, vad=vad, barge_in=a.interruption)
+            if finished:
+                mic.drain()        # jeter ce que le micro a capté pendant que Jarvis parlait (sa propre voix)
             # une question posée (confirmation, précision) ou une interruption : on écoute sans mot d'éveil
             follow_up = r.attend_confirmation or r.text.rstrip().endswith("?") or not finished
 
