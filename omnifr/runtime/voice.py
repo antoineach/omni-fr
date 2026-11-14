@@ -454,7 +454,9 @@ def _play_stream(sr: int, chunks, mic=None, vad=None, barge_in: bool = False, t0
         if speed is None:
             need = float("inf")
         else:
-            need = 0.3 if speed >= 1.3 else max(0.3, (est_total - gen_s) * (1 - speed) / max(speed, 0.3) + 0.4)
+            # marge : la vitesse mesurée au début surestime la suite (contexte qui s'allonge, GPU partagé)
+            sp = 0.8 * speed
+            need = 0.5 if sp >= 1.4 else max(0.8, (est_total - gen_s) * (1 - sp) / max(sp, 0.3) + 0.6)
         if gen_s >= need:
             break
         try:
@@ -472,8 +474,19 @@ def _play_stream(sr: int, chunks, mic=None, vad=None, barge_in: bool = False, t0
         vad.reset()
     speech, total = 0.0, 0
     with sd.OutputStream(samplerate=sr, channels=1, dtype="float32", latency="high") as out:
+        pauses = 0
         while True:
-            c = pending.pop(0) if pending else buf.get()
+            if pending:
+                c = pending.pop(0)
+            else:
+                try:
+                    c = buf.get(timeout=0.03)
+                except _q.Empty:
+                    # génération en retard : on nourrit la carte son de silence (petite pause nette)
+                    # plutôt que de la laisser à vide (craquement « underrun »)
+                    out.write(np.zeros((int(0.05 * sr), 1), np.float32))
+                    pauses += 1
+                    continue
             if c is None:
                 break
             out.write(c.reshape(-1, 1))
@@ -490,7 +503,8 @@ def _play_stream(sr: int, chunks, mic=None, vad=None, barge_in: bool = False, t0
                             pass
                     return False
     if verbose and t0 is not None:
-        print(f"   [voix : {total / sr:.1f} s d'audio, fini {time.time() - t0:.1f} s après la demande]", flush=True)
+        extra = f", {pauses * 0.05:.1f} s de pause par manque d'avance" if pauses else ""
+        print(f"   [voix : {total / sr:.1f} s d'audio, fini {time.time() - t0:.1f} s après la demande{extra}]", flush=True)
     return True
 
 

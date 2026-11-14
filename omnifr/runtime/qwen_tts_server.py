@@ -30,7 +30,8 @@ def main() -> None:
     ap.add_argument("--voix", default="", help="extrait WAV (mode clone)")
     ap.add_argument("--texte-voix", default="", help="transcription de l'extrait (améliore le clonage)")
     ap.add_argument("--nom", default="", help="voix prédéfinie (mode expressif)")
-    ap.add_argument("--morceau", type=int, default=4, help="pas de codec par morceau (12 Hz : 4 = 333 ms)")
+    ap.add_argument("--morceau", type=int, default=8,
+                    help="pas de codec par morceau (12 Hz : 8 = 667 ms). Plus gros = meilleur débit, premier son plus tardif")
     a = ap.parse_args()
 
     import threading

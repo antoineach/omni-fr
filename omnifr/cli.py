@@ -376,7 +376,14 @@ def cmd_discuter(a) -> None:
     with _brain(a, cfg) as llm:
         orch = _orchestrator(a, llm, on_wait=lambda s: print(f"Jarvis : {s}"))
         print("Écrivez vos demandes (vide pour quitter).")
-        while (u := input("Vous : ").strip()):
+        while True:
+            try:
+                u = input("Vous : ").strip()
+            except (KeyboardInterrupt, EOFError):
+                print()
+                break
+            if not u:
+                break
             try:
                 r = orch.turn(u)
             except Exception as e:
