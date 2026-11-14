@@ -15,6 +15,9 @@ on:
       tts:
         type: boolean
         default: true
+      moteurs_stt:
+        description: "Moteurs STT séparés par des espaces"
+        default: "parakeet-v3-int8 nemotron-3.5-streaming lfm3-audio"
       moteurs_tts:
         description: "Liste JSON des moteurs TTS"
         default: '["chatterbox", "zonos"]'
@@ -51,7 +54,7 @@ jobs:
           cmake -S llama.cpp -B llama.cpp/build -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=ON -DLLAMA_CURL=OFF -DGGML_METAL=OFF -DBUILD_SHARED_LIBS=OFF
           cmake --build llama.cpp/build --config Release -j 4
       - name: Transcription
-        run: python bench/eval_stt.py --bin llama.cpp/build/bin --threads 4 --json eval-stt.json
+        run: python bench/eval_stt.py --bin llama.cpp/build/bin --threads 4 --moteurs "${{ inputs.moteurs_stt }}" --json eval-stt.json
       - name: Journal du serveur (en cas d'échec)
         if: failure()
         run: tail -n 80 serveur-*.log || true

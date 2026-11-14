@@ -106,3 +106,39 @@ class Parakeet:
         s.accept_waveform(16000, x)
         self.rec.decode_stream(s)
         return s.result.text.strip()
+
+
+GTCRN_URL = ("https://github.com/k2-fsa/sherpa-onnx/releases/download/speech-enhancement-models/"
+             "gtcrn_simple.onnx")
+
+
+class Gtcrn:
+    """Débruitage monocanal GTCRN (≈ 50 k paramètres) via sherpa-onnx, appliqué avant l'ASR."""
+
+    def __init__(self, dest: Path, threads: int = 4):
+        import sherpa_onnx
+        p = dest / "gtcrn_simple.onnx"
+        if not p.exists():
+            urllib.request.urlretrieve(GTCRN_URL, p)
+        cfg = sherpa_onnx.OfflineSpeechDenoiserConfig(
+            model=sherpa_onnx.OfflineSpeechDenoiserModelConfig(
+                gtcrn=sherpa_onnx.OfflineSpeechDenoiserGtcrnModelConfig(model=str(p)), num_threads=threads))
+        self.d = sherpa_onnx.OfflineSpeechDenoiser(cfg)
+
+    def __call__(self, x: np.ndarray) -> np.ndarray:
+        out = self.d(x, 16000)
+        return resample(np.asarray(out.samples, dtype=np.float32), out.sample_rate)
+
+
+class Chain:
+    """Débruiteur puis ASR, vu comme un seul moteur par le banc."""
+
+    def __init__(self, name: str, denoise, asr):
+        self.name, self.dn, self.asr = name, denoise, asr
+
+    def __call__(self, x: np.ndarray) -> str:
+        return self.asr(self.dn(x))
+
+    def close(self):
+        if hasattr(self.asr, "close"):
+            self.asr.close()

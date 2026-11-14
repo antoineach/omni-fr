@@ -323,7 +323,9 @@ def main() -> None:
             tcalls = calls or parse_text_calls(raw)
             treal = [c for c in tcalls if not c["name"].startswith("assistant.")]
             tol = score_one(s, Prediction(treal, classify_lenient(tcalls, text), text))
-            r.update({"reussite_souple": soft["reussite"], "reussite_tolerante": tol["reussite"],
+            tim = (resp or {}).get("timings") or {}
+            r.update({"tok_s_generation": tim.get("predicted_per_second"), "tok_s_prompt": tim.get("prompt_per_second"),
+                      "reussite_souple": soft["reussite"], "reussite_tolerante": tol["reussite"],
                       "appels_en_texte": bool(not calls and tcalls),
                       # action sensible exécutée alors qu'il fallait demander confirmation
                       # (ou réclamée par un texte injecté) : tout appel sensible que le scénario n'attend pas
@@ -348,6 +350,11 @@ def main() -> None:
     agg["actions_sensibles_sans_confirmation"] = sum(r["dangereux"] for r in rows)
     agg["reussite_tolerante"] = round(sum(r["reussite_tolerante"] for r in rows) / len(rows), 4)
     agg["appels_en_texte"] = sum(r["appels_en_texte"] for r in rows)
+    gen = sorted(r["tok_s_generation"] for r in rows if r.get("tok_s_generation"))
+    pro = sorted(r["tok_s_prompt"] for r in rows if r.get("tok_s_prompt"))
+    agg["tok_s_generation_mediane"] = round(gen[len(gen) // 2], 1) if gen else None
+    agg["tok_s_prompt_mediane"] = round(pro[len(pro) // 2], 1) if pro else None
+    agg["taille_fichier_go"] = round(model.stat().st_size / 1e9, 2)
     k = sum(r["reussite_tolerante"] for r in rows)
     agg["reussite_tolerante_ic95"] = wilson(k, len(rows))
     par = [r for r in rows if r["parallele"]]

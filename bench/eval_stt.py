@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from bench.eval_audio import REPO as LFM_REPO, transcribe as lfm_transcribe  # noqa: E402
 from bench.eval_llm import wait_ready  # noqa: E402
-from bench.voice_common import CONDITIONS, Parakeet, mls_french, noisy, read_wav, resample  # noqa: E402
+from bench.voice_common import CONDITIONS, Chain, Gtcrn, Parakeet, mls_french, noisy, read_wav, resample  # noqa: E402
 from omnifr.metrics import normalize_fr, wer  # noqa: E402
 from omnifr.sim.scenarios import load  # noqa: E402
 
@@ -137,6 +137,7 @@ def main() -> None:
     ap.add_argument("--n-humain", type=int, default=24)
     ap.add_argument("--n-domotique", type=int, default=16)
     ap.add_argument("--moteurs", default="parakeet-v3-int8 nemotron-3.5-streaming lfm3-audio")
+    # ex. --moteurs "gtcrn+parakeet gtcrn+lfm3-audio" pour mesurer le débruitage
     ap.add_argument("--models", default="models")
     ap.add_argument("--json", default="")
     a = ap.parse_args()
@@ -163,6 +164,9 @@ def main() -> None:
         "parakeet-v3-int8": lambda: Parakeet(dest, a.threads),
         "nemotron-3.5-streaming": lambda: Nemotron(a.threads),
         "lfm3-audio": lambda: LFM3(binp, model, mmproj, a.threads),
+        "gtcrn+parakeet": lambda: Chain("gtcrn+parakeet", Gtcrn(dest, a.threads), Parakeet(dest, a.threads)),
+        "gtcrn+lfm3-audio": lambda: Chain("gtcrn+lfm3-audio", Gtcrn(dest, a.threads),
+                                          LFM3(binp, model, mmproj, a.threads)),
     }
     for name in wanted:
         print(f"\n=== {name} ===", flush=True)

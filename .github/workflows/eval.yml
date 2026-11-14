@@ -32,6 +32,14 @@ jobs:
           - {name: minicpm5-2b, repos: "openbmb/MiniCPM5-2B-GGUF bartowski/openbmb_MiniCPM5-2B-GGUF"}
           - {name: spark-x2.6-4b, repos: "XHToken/Spark-X2.6-4B-GGUF"}
           - {name: nemotron-bolt-e4b-gabarit-gemma, repos: "unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-GGUF nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-4GB", gabarit: "ggml-org/gemma-4-e4b-it-GGUF"}
+          # Quantifications Unsloth « dynamiques » (UD) : précision contre vitesse, même modèle
+          - {name: nemotron-bolt-UD-IQ2_XXS, repos: "unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-GGUF", quant: "UD-IQ2_XXS"}
+          - {name: nemotron-bolt-UD-Q2_K_XL, repos: "unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-GGUF", quant: "UD-Q2_K_XL"}
+          - {name: nemotron-bolt-UD-Q3_K_XL, repos: "unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-GGUF", quant: "UD-Q3_K_XL"}
+          - {name: nemotron-bolt-UD-Q4_K_XL, repos: "unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-GGUF", quant: "UD-Q4_K_XL"}
+          - {name: nemotron-bolt-Q4_0, repos: "unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-GGUF", quant: "Q4_0"}
+          - {name: qwen3.5-4b-UD-IQ2_XXS, repos: "unsloth/Qwen3.5-4B-GGUF", quant: "UD-IQ2_XXS"}
+          - {name: qwen3.5-4b-UD-Q3_K_XL, repos: "unsloth/Qwen3.5-4B-GGUF", quant: "UD-Q3_K_XL"}
           - {name: qwen3.5-4b, repos: "unsloth/Qwen3.5-4B-GGUF bartowski/Qwen_Qwen3.5-4B-GGUF Qwen/Qwen3.5-4B-GGUF"}
           - {name: granite-4.1-8b, repos: "ibm-granite/granite-4.1-8b-GGUF unsloth/granite-4.1-8b-GGUF bartowski/ibm-granite_granite-4.1-8b-GGUF"}
     runs-on: ubuntu-24.04-arm
@@ -61,7 +69,7 @@ jobs:
         run: |
           args=""; for r in ${{ matrix.repos }}; do args="$args --repo $r"; done
           if [ -n "${{ matrix.gabarit }}" ]; then args="$args --template-from ${{ matrix.gabarit }}"; fi
-          python bench/eval_llm.py --llama llama.cpp/build/bin/llama-server $args --name ${{ matrix.name }} --quant Q4_K_M,Q4_0,Q8_0,F16 --threads 4 --json eval-${{ matrix.name }}.json
+          python bench/eval_llm.py --llama llama.cpp/build/bin/llama-server $args --name ${{ matrix.name }} --quant ${{ matrix.quant || 'Q4_K_M,Q4_0,Q8_0,F16' }} --threads 4 --json eval-${{ matrix.name }}.json
       - name: Journal du serveur (en cas d'échec)
         if: failure()
         run: tail -n 80 serveur-*.log || true
