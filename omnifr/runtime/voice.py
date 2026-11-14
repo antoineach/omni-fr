@@ -229,6 +229,7 @@ class Speaker:
     def say(self, text: str, emotion: str, mic: Mic | None = None, vad: Vad | None = None,
             barge_in: bool = False) -> bool:
         import re
+        text = re.sub(r"(\d)\.(\d)", r"\1,\2", text)      # 15.4 -> 15,4 : lu « quinze virgule quatre »
         sentences = [s for s in re.split(r"(?<=[.!?…])\s+", text) if s.strip()] or [text]
         q: queue.Queue = queue.Queue(maxsize=2)
 
