@@ -1,7 +1,9 @@
-import torch
+import pytest
 
-from omnifr.config import preset
-from omnifr.model import IGNORE, Batch, HFBackbone, OmniStudent
+torch = pytest.importorskip("torch")  # étudiant PyTorch : test sauté sans torch
+
+from omnifr.config import preset  # noqa: E402
+from omnifr.model import IGNORE, Batch, HFBackbone, OmniStudent  # noqa: E402
 
 
 def _frames_batch(cfg, S, speak_from=None, seed=0):
