@@ -104,7 +104,55 @@ class LlamaServer:
             raise RuntimeError(f"llama-server {e.code} : {body}") from None
         return out["choices"][0]["message"]
 
-    def __call__(self, messages: list[dict], tools: list[dict]) -> dict:
+    def chat_stream(self, messages: list[dict], tools: list[dict] | None = None, on_text=None,
+                    temperature: float = 0.0, max_tokens: int = 400) -> dict:
+        """Comme ``chat`` mais en flux : ``on_text(delta)`` reçoit le texte au fil de l'eau.
+
+        Les appels d'outils arrivent en morceaux (``delta.tool_calls``) et sont recollés ; le message
+        complet est renvoyé à la fin, au même format que ``chat``.
+        """
+        payload = {"messages": messages, "temperature": temperature, "max_tokens": max_tokens, "stream": True,
+                   "chat_template_kwargs": {"enable_thinking": False}}
+        if tools:
+            payload["tools"] = tools
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}/v1/chat/completions",
+                                     data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"})
+        content, calls = [], {}
+        try:
+            with urllib.request.urlopen(req, timeout=600) as r:
+                for raw in r:
+                    line = raw.decode("utf-8", "replace").strip()
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    ch = json.loads(data).get("choices") or []
+                    if not ch:
+                        continue
+                    d = ch[0].get("delta") or {}
+                    if d.get("content"):
+                        content.append(d["content"])
+                        if on_text and not calls:
+                            on_text(d["content"])
+                    for tc in d.get("tool_calls") or []:
+                        c = calls.setdefault(tc.get("index", 0), {"id": tc.get("id") or f"c{len(calls)}",
+                                                                  "type": "function",
+                                                                  "function": {"name": "", "arguments": ""}})
+                        f = tc.get("function") or {}
+                        c["function"]["name"] += f.get("name") or ""
+                        c["function"]["arguments"] += f.get("arguments") or ""
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", "replace")[:800]
+            raise RuntimeError(f"llama-server {e.code} : {body}") from None
+        msg = {"role": "assistant", "content": "".join(content)}
+        if calls:
+            msg["tool_calls"] = [calls[k] for k in sorted(calls)]
+        return msg
+
+    def __call__(self, messages: list[dict], tools: list[dict], on_text=None) -> dict:
+        if on_text is not None:
+            return self.chat_stream(messages, tools, on_text=on_text)
         return self.chat(messages, tools)
 
     def close(self) -> None:

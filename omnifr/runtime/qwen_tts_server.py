@@ -30,6 +30,8 @@ def main() -> None:
     ap.add_argument("--voix", default="", help="extrait WAV (mode clone)")
     ap.add_argument("--texte-voix", default="", help="transcription de l'extrait (améliore le clonage)")
     ap.add_argument("--nom", default="", help="voix prédéfinie (mode expressif)")
+    ap.add_argument("--backend", choices=["torch", "ggml"], default="torch",
+                    help="ggml : moteur C++ qwentts.cpp (pip install 'faster-qwen3-tts[ggml]'), expérimental")
     ap.add_argument("--morceau", type=int, default=8,
                     help="pas de codec par morceau (12 Hz : 8 = 667 ms). Plus gros = meilleur débit, premier son plus tardif")
     a = ap.parse_args()
@@ -42,7 +44,11 @@ def main() -> None:
 
     kind = "Base" if a.mode == "clone" else "CustomVoice"
     dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16   # Turing (2070) : float16
-    m = FasterQwen3TTS.from_pretrained(f"Qwen/Qwen3-TTS-12Hz-{a.taille}-{kind}", device="cuda", dtype=dtype)
+    if a.backend == "ggml":
+        m = FasterQwen3TTS.from_pretrained(f"Qwen/Qwen3-TTS-12Hz-{a.taille}-{kind}", backend="ggml")
+    else:
+        m = FasterQwen3TTS.from_pretrained(f"Qwen/Qwen3-TTS-12Hz-{a.taille}-{kind}", device="cuda", dtype=dtype)
+    print(f"moteur : {a.backend}", flush=True)
     speaker = a.nom
     if a.mode == "expressif":
         inner = getattr(m, "model", None)

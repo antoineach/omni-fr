@@ -83,6 +83,50 @@ class Backend(Protocol):
     def execute(self, call: ToolCall, confirmed: bool = False): ...
 
 
+class SentenceStreamer:
+    """Découpe le texte du LLM en phrases au fil de l'eau et les transmet dès qu'elles sont finies.
+
+    L'étiquette d'émotion de tête est lue une fois. Une phrase qui ressemble à un appel d'outil
+    écrit en texte n'est jamais transmise (elle ne doit pas être prononcée).
+    """
+
+    _END = re.compile(r"(?<=[.!?…])\s+|(?<=[.!?…])$")
+
+    def __init__(self, on_sentence: Callable[[str, str], None]):
+        self.on_sentence, self.buf, self.emotion, self.sent = on_sentence, "", None, []
+
+    @staticmethod
+    def _looks_like_call(t: str) -> bool:
+        return bool(_TXT_CALL.search(t.replace('<|"|>', '"'))) or "<tool_call" in t or "<|" in t
+
+    def feed(self, delta: str) -> None:
+        self.buf += delta
+        if self.emotion is None:
+            stripped = self.buf.lstrip()
+            if not stripped:
+                return
+            if stripped.startswith("[") and "]" not in stripped:
+                return                                   # étiquette en cours d'écriture
+            self.emotion, self.buf = split_emotion(self.buf)
+        while True:
+            m = re.search(r"[.!?…](\s+)", self.buf)
+            if not m:
+                return
+            sentence, self.buf = self.buf[: m.start() + 1].strip(), self.buf[m.end():]
+            self._emit(sentence)
+
+    def _emit(self, sentence: str) -> None:
+        if sentence and not self._looks_like_call(sentence):
+            self.sent.append(sentence)
+            self.on_sentence(sentence, self.emotion or "neutre")
+
+    def flush(self) -> None:
+        if self.emotion is None:
+            self.emotion, self.buf = split_emotion(self.buf)
+        self._emit(self.buf.strip())
+        self.buf = ""
+
+
 @dataclass
 class Reply:
     text: str
@@ -90,6 +134,7 @@ class Reply:
     actions: list[dict] = field(default_factory=list)       # appels exécutés et leurs résultats
     attend_confirmation: bool = False
     bloques: list[dict] = field(default_factory=list)        # appels refusés par les règles
+    deja_dit: list[str] = field(default_factory=list)        # phrases déjà envoyées à la voix en flux
 
 
 LLM = Callable[[list[dict], list[dict]], dict]
@@ -172,7 +217,14 @@ class Orchestrator:
 
     # -- tour de parole ---------------------------------------------------------
 
-    def turn(self, user_text: str) -> Reply:
+    def turn(self, user_text: str, on_sentence: Callable[[str, str], None] | None = None) -> Reply:
+        """``on_sentence(phrase, émotion)`` : reçoit chaque phrase de la réponse dès qu'elle est écrite."""
+        self._spoken: list[str] = []
+        r = self._turn(user_text, on_sentence)
+        r.deja_dit = self._spoken
+        return r
+
+    def _turn(self, user_text: str, on_sentence) -> Reply:
         self.history.append({"role": "user", "content": user_text})
         actions: list[dict] = []
         allow_sensitive = False
@@ -192,7 +244,18 @@ class Orchestrator:
         blocked: list[dict] = []
         for rnd in range(self.max_rounds):
             ctx = [{"role": "system", "content": self.system}] + self.history
-            msg = self.llm(ctx, self.tools)
+            if on_sentence is not None:
+                st = SentenceStreamer(on_sentence)
+                try:
+                    msg = self.llm(ctx, self.tools, on_text=st.feed)
+                except TypeError:                       # LLM sans flux (tests, autre serveur)
+                    msg = self.llm(ctx, self.tools)
+                    st.feed(msg.get("content") or "")
+                if not msg.get("tool_calls"):
+                    st.flush()
+                self._spoken += st.sent
+            else:
+                msg = self.llm(ctx, self.tools)
             calls = self._calls_of(msg)
             self.trace.append({"contexte": [dict(m) for m in ctx], "sortie": msg, "appels": calls, "tour": rnd,
                                "confirmation_accordee": allow_sensitive})

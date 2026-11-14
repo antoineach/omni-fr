@@ -48,6 +48,22 @@ jobs:
               t = time.time(); x, sr = tts.synth(txt, "calme"); print(f"{len(x)/sr:.1f} s audio en {time.time()-t:.1f} s")
           PY
           tail -20 ~/omnifr-modeles/zonos3.log || true
+      - name: Cerveau en flux (phrases transmises au fil de l'eau)
+        run: |
+          python - <<'PY'
+          import json, time
+          from pathlib import Path
+          from omnifr.runtime.llm import LlamaServer, build_tools, system_prompt
+          from omnifr.runtime.orchestrator import Orchestrator
+          from omnifr.sim.home import HomeSimulator
+          d = Path.home() / "omnifr-modeles"; cfg = json.loads((d / "config.json").read_text())
+          with LlamaServer(cfg["llama_server"], cfg["cerveau"], ctx=8192, ngl=0, threads=4) as llm:
+              sim = HomeSimulator(); o = Orchestrator(llm, sim, system_prompt(sim), build_tools(sim))
+              for u in ["Bonjour Jarvis, présente-toi en deux phrases.", "Allume la cuisine et la chambre."]:
+                  t = time.time()
+                  r = o.turn(u, on_sentence=lambda s, e: print(f"  +{time.time()-t:.1f}s [{e}] {s}", flush=True))
+                  print(f"fin +{time.time()-t:.1f}s ; actions {len(r.actions)} ; texte : {r.text}")
+          PY
       - name: omnifr tester (CPU)
         run: omnifr tester --voix-cpu --ngl 0
       - name: Chaîne audio sur fichiers

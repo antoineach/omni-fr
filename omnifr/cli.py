@@ -22,6 +22,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -362,6 +363,14 @@ def _orchestrator(a, llm, on_wait=None):
     return Orchestrator(llm, backend, system_prompt(sim), build_tools(sim), on_wait=on_wait)
 
 
+def _unsaid(r) -> list[str]:
+    """Phrases de la réponse finale pas encore prononcées en flux (confirmations, messages de l'orchestrateur)."""
+    import re
+    said = {" ".join(x.split()) for x in r.deja_dit}
+    sents = [x.strip() for x in re.split(r"(?<=[.!?…])\s+", r.text) if x.strip()]
+    return [x for x in sents if " ".join(x.split()) not in said]
+
+
 def cmd_discuter(a) -> None:
     cfg = load_cfg(a)
     spk = None
@@ -372,7 +381,7 @@ def cmd_discuter(a) -> None:
         asr = voice.Parakeet(home(a) / "asr") if a.moteur_voix == "qwen-clone" and a.clone_fidele else None
         spk = voice.Speaker(voice.make_tts(Path(cfg["zonos3"]), ref, gpu=not a.voix_cpu, log=home(a) / "zonos3.log",
                                            engine=a.moteur_voix, speaker=a.voix_nom, size=a.taille_voix, asr=asr,
-                                           fidele=a.clone_fidele))
+                                           fidele=a.clone_fidele, backend=a.voix_backend))
     with _brain(a, cfg) as llm:
         orch = _orchestrator(a, llm, on_wait=lambda s: print(f"Jarvis : {s}"))
         print("Écrivez vos demandes (vide pour quitter).")
@@ -384,9 +393,13 @@ def cmd_discuter(a) -> None:
                 break
             if not u:
                 break
+            stream = spk.open() if spk else None
+            t0 = time.time()
             try:
-                r = orch.turn(u)
+                r = orch.turn(u, on_sentence=stream.add if stream else None)
             except Exception as e:
+                if stream:
+                    stream.finish()
                 print(f"   ⚠ {e}")
                 orch.history = orch.history[:-1] if orch.history and orch.history[-1]["role"] == "user" else orch.history
                 continue
@@ -394,8 +407,12 @@ def cmd_discuter(a) -> None:
                 print(f"   ↳ {act['appel']['name']} {json.dumps(act['appel']['args'], ensure_ascii=False)} -> {act['statut']}")
             for b in r.bloques:
                 print(f"   ⛔ bloqué : {b['name']} {json.dumps(b['args'], ensure_ascii=False)}")
-            print(f"Jarvis [{r.emotion}] : {r.text}")
-            if spk and r.text:
+            print(f"Jarvis [{r.emotion}] : {r.text}   ({time.time() - t0:.1f} s)")
+            if stream:
+                for sent in _unsaid(r):
+                    stream.add(sent, r.emotion)
+                stream.finish()
+            elif spk and r.text:
                 spk.say(r.text, r.emotion)
 
 
@@ -408,11 +425,13 @@ def cmd_assistant(a) -> None:
     ref = Path(a.voix) if a.voix else (Path(cfg["voix_reference"]) if cfg.get("voix_reference") else None)
     tts = voice.make_tts(Path(cfg["zonos3"]), ref, gpu=not a.voix_cpu, log=d / "zonos3.log",
                          engine=a.moteur_voix, speaker=a.voix_nom, size=a.taille_voix, asr=asr,
-                         fidele=a.clone_fidele)
+                         fidele=a.clone_fidele, backend=a.voix_backend)
     spk = voice.Speaker(tts)
     with _brain(a, cfg) as llm:
         mic = voice.Mic(device=a.micro)
-        orch = _orchestrator(a, llm, on_wait=lambda s: spk.say(s, "neutre"))
+        cur: dict = {"stream": None}      # phrase d'attente (« Je regarde. ») dans le flux en cours s'il existe
+        orch = _orchestrator(a, llm, on_wait=lambda s: cur["stream"].add(s, "neutre") if cur["stream"]
+                             else spk.say(s, "neutre"))
         print("Dites « Hey Jarvis »." if not a.sans_eveil else "Parlez quand vous voulez.", flush=True)
         follow_up = False
         while True:
@@ -430,11 +449,18 @@ def cmd_assistant(a) -> None:
             print(f"Vous : {text}", flush=True)
             if not text:
                 continue
-            r = orch.turn(text)
+            stream = cur["stream"] = spk.open(mic=mic, vad=vad, barge_in=a.interruption)
+            r = orch.turn(text, on_sentence=stream.add if stream else None)
             for act in r.actions:
                 print(f"   ↳ {act['appel']['name']} {json.dumps(act['appel']['args'], ensure_ascii=False)} -> {act['statut']}")
             print(f"Jarvis [{r.emotion}] : {r.text}", flush=True)
-            finished = spk.say(r.text, r.emotion, mic=mic, vad=vad, barge_in=a.interruption)
+            if stream:
+                for sent in _unsaid(r):
+                    stream.add(sent, r.emotion)
+                finished = stream.finish()
+                cur["stream"] = None
+            else:
+                finished = spk.say(r.text, r.emotion, mic=mic, vad=vad, barge_in=a.interruption)
             if finished:
                 mic.drain()        # jeter ce que le micro a capté pendant que Jarvis parlait (sa propre voix)
             # une question posée (confirmation, précision) ou une interruption : on écoute sans mot d'éveil
@@ -542,6 +568,8 @@ def main(argv: list[str] | None = None) -> None:
                         "sans contrôle d'émotion ; zonos3 : ancien moteur")
     p.add_argument("--voix-nom", default="", help="voix prédéfinie Qwen3-TTS (liste affichée au chargement)")
     p.add_argument("--taille-voix", choices=["0.6B", "1.7B"], default="0.6B", help="1.7B : meilleur, ~4 Go de VRAM")
+    p.add_argument("--voix-backend", choices=["torch", "ggml"], default="torch",
+                   help="ggml : moteur C++ qwentts.cpp au lieu de PyTorch + graphes CUDA (expérimental)")
     p.add_argument("--clone-fidele", action="store_true",
                    help="clonage avec l'extrait en contexte : plus ressemblant, ~3 fois plus lent")
     p.set_defaults(f=cmd_discuter)
@@ -555,6 +583,8 @@ def main(argv: list[str] | None = None) -> None:
                         "sans contrôle d'émotion ; zonos3 : ancien moteur")
     p.add_argument("--voix-nom", default="", help="voix prédéfinie Qwen3-TTS (liste affichée au chargement)")
     p.add_argument("--taille-voix", choices=["0.6B", "1.7B"], default="0.6B", help="1.7B : meilleur, ~4 Go de VRAM")
+    p.add_argument("--voix-backend", choices=["torch", "ggml"], default="torch",
+                   help="ggml : moteur C++ qwentts.cpp au lieu de PyTorch + graphes CUDA (expérimental)")
     p.add_argument("--clone-fidele", action="store_true",
                    help="clonage avec l'extrait en contexte : plus ressemblant, ~3 fois plus lent")
     p.add_argument("--micro", default=None, help="périphérique d'entrée (nom ou numéro sounddevice)")

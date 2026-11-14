@@ -243,14 +243,15 @@ class Qwen3TTS:
     """
 
     def __init__(self, mode: str = "expressif", size: str = "0.6B", voice_ref: Path | None = None,
-                 speaker: str = "", asr=None, port: int = 8095, log: Path | None = None, fidele: bool = False):
+                 speaker: str = "", asr=None, port: int = 8095, log: Path | None = None, fidele: bool = False,
+                 backend: str = "torch"):
         import sys
         repo = Path(__file__).resolve().parents[2]
         py = repo / ".venv-voix" / "bin" / "python"
         if not py.exists():
             raise FileNotFoundError(f"{py} absent : lancer « bash scripts/installer_voix.sh »")
         cmd = [str(py), str(Path(__file__).with_name("qwen_tts_server.py")), "--port", str(port), "--mode", mode,
-               "--taille", size]
+               "--taille", size, "--backend", backend]
         if mode == "clone":
             if not voice_ref:
                 raise ValueError("mode clone : donner --voix extrait.wav")
@@ -290,7 +291,7 @@ class Qwen3TTS:
             raise TimeoutError("serveur Qwen3-TTS non prêt")
         if self.log.exists():
             for line in self.log.read_text(errors="replace").splitlines():
-                if line.startswith("voix disponibles"):
+                if line.startswith(("voix disponibles", "moteur :")):
                     print(line, flush=True)
 
     def stream(self, text: str, emotion: str = "neutre"):
@@ -329,13 +330,14 @@ class Qwen3TTS:
 
 
 def make_tts(root: Path, voice_ref: Path | None, gpu: bool, log: Path | None = None, engine: str = "qwen",
-             speaker: str = "", size: str = "0.6B", asr=None, fidele: bool = False):
+             speaker: str = "", size: str = "0.6B", asr=None, fidele: bool = False, backend: str = "torch"):
     """Qwen3-TTS par défaut (expressif, ou clone si --voix-mode clone) ; ZONOS3 en repli."""
     if engine.startswith("qwen"):
         mode = "clone" if engine == "qwen-clone" else "expressif"
         try:
             return Qwen3TTS(mode, size, voice_ref, speaker, asr=asr,
-                            log=(log.parent / "qwen-tts.log") if log else None, fidele=fidele)
+                            log=(log.parent / "qwen-tts.log") if log else None, fidele=fidele,
+                            backend=backend)
         except Exception as e:
             print(f"Qwen3-TTS indisponible : {type(e).__name__}: {e}\n(journal complet : {log.parent / 'qwen-tts.log' if log else '?'})"
                   " ; repli sur ZONOS3", flush=True)
@@ -508,11 +510,93 @@ def _play_stream(sr: int, chunks, mic=None, vad=None, barge_in: bool = False, t0
     return True
 
 
+class SpeechStream:
+    """Phrases ajoutées au fil de l'eau -> une seule lecture continue.
+
+    Un fil synthétise les phrases dans l'ordre (le serveur de voix n'en traite qu'une à la fois) et
+    verse les morceaux d'audio dans une file ; la lecture démarre dès que le tampon adaptatif le
+    permet et enchaîne les phrases sans rouvrir la carte son.
+    """
+
+    _END = object()
+
+    def __init__(self, tts, mic=None, vad=None, barge_in: bool = False, verbose: bool = True):
+        import queue as _q
+        self.tts, self.mic, self.vad, self.barge_in, self.verbose = tts, mic, vad, barge_in, verbose
+        self.sentences: _q.Queue = _q.Queue()
+        self.audio: _q.Queue = _q.Queue()
+        self.t0 = time.time()
+        self.text = ""
+        self.sr: int | None = None
+        self.sr_ready = threading.Event()
+        self.result = True
+        self.cancel = threading.Event()
+        self.gen = threading.Thread(target=self._generate, daemon=True)
+        self.player = threading.Thread(target=self._play, daemon=True)
+        self.gen.start()
+        self.player.start()
+
+    def add(self, sentence: str, emotion: str) -> None:
+        import re
+        sentence = re.sub(r"(\d)\.(\d)", r"\1,\2", sentence)
+        self.text += " " + sentence
+        if self.verbose:
+            print(f"   [cerveau : phrase prête après {time.time() - self.t0:.2f} s] {sentence}", flush=True)
+        self.sentences.put((sentence, emotion))
+
+    def _generate(self) -> None:
+        while True:
+            item = self.sentences.get()
+            if item is self._END or self.cancel.is_set():
+                break
+            try:
+                sr, it = self.tts.stream(*item)
+                if self.sr is None:
+                    self.sr = sr
+                    self.sr_ready.set()
+                for c in it:
+                    if self.cancel.is_set():
+                        break
+                    self.audio.put(c)
+            except Exception as e:
+                print(f"   ⚠ voix : {e}", flush=True)
+        self.audio.put(None)
+        self.sr_ready.set()
+
+    def _chunks(self):
+        while True:
+            c = self.audio.get()
+            if c is None:
+                return
+            yield c
+
+    def _play(self) -> None:
+        self.sr_ready.wait()
+        if self.sr is None:
+            return
+        # longueur estimée : texte connu au moment du démarrage (le reste arrive pendant la lecture)
+        self.result = _play_stream(self.sr, self._chunks(), self.mic, self.vad, self.barge_in, t0=self.t0,
+                                   verbose=self.verbose, text=self.text)
+        if not self.result:
+            self.cancel.set()
+
+    def finish(self) -> bool:
+        """Plus de phrases : attend la fin de la lecture. False si l'utilisateur a coupé la parole."""
+        self.sentences.put(self._END)
+        self.gen.join()
+        self.player.join()
+        return self.result
+
+
 class Speaker:
     """Synthétise phrase par phrase en tâche de fond pour commencer à parler plus tôt."""
 
     def __init__(self, tts, verbose: bool = True):
         self.tts, self.verbose = tts, verbose
+
+    def open(self, mic=None, vad=None, barge_in: bool = False) -> "SpeechStream | None":
+        """Flux de phrases si le moteur sait générer en flux, sinon None (on parlera à la fin)."""
+        return SpeechStream(self.tts, mic, vad, barge_in, self.verbose) if hasattr(self.tts, "stream") else None
 
     def _say_stream(self, text, emotion, mic, vad, barge_in) -> bool:
         t0 = time.time()

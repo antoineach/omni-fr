@@ -100,3 +100,61 @@ def test_distill_rewrites_sensitive_and_drops_injection():
     orch, sim, _ = make("Bonjour !")                  # pas d'étiquette d'émotion : écarté
     orch.turn("Salut")
     assert examples_from_trace(orch, sim) == []
+
+
+class StreamingFakeLLM(FakeLLM):
+    def __call__(self, messages, tools, on_text=None):
+        msg = super().__call__(messages, tools)
+        if on_text and not msg.get("tool_calls"):
+            for i in range(0, len(msg["content"]), 7):       # texte livré par petits bouts
+                on_text(msg["content"][i:i + 7])
+        return msg
+
+
+def test_sentences_streamed_as_soon_as_written():
+    sim = HomeSimulator()
+    llm = StreamingFakeLLM([call("maison.allumer", entite="light.cuisine")],
+                           "[joie] C'est fait. La cuisine est allumée ! Autre chose ?")
+    orch = Orchestrator(llm, sim, system_prompt(sim), build_tools(sim))
+    got = []
+    r = orch.turn("Allume la cuisine.", on_sentence=lambda s, e: got.append((s, e)))
+    assert got == [("C'est fait.", "joie"), ("La cuisine est allumée !", "joie"), ("Autre chose ?", "joie")]
+    assert r.deja_dit == [g[0] for g in got] and sim.entities["light.cuisine"].state["on"]
+
+
+def test_text_written_call_is_never_spoken():
+    from omnifr.runtime.orchestrator import SentenceStreamer
+    got = []
+    st = SentenceStreamer(lambda s, e: got.append(s))
+    st.feed('[calme] Je regarde. maison__etat{entite:<|"|>climate.salon<|"|>} ')
+    st.flush()
+    assert got == ["Je regarde."]
+
+
+def test_speech_stream_plays_sentences_in_order(monkeypatch):
+    import sys
+    import types
+
+    import numpy as np
+    played = []
+
+    class Out:
+        def __init__(self, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def write(self, x): played.append(float(x[0, 0]))
+
+    monkeypatch.setitem(sys.modules, "sounddevice", types.SimpleNamespace(OutputStream=Out))
+    from omnifr.runtime.voice import SpeechStream
+
+    class TTS:
+        def stream(self, text, emotion):
+            v = float(len(text))
+            return 24000, iter([np.full(2400, v, np.float32), np.full(2400, v, np.float32)])
+
+    s = SpeechStream(TTS(), verbose=False)
+    s.add("Un.", "calme")
+    s.add("Deux deux.", "calme")
+    assert s.finish() is True
+    vals = [v for v in played if v != 0.0]
+    assert vals == [3.0, 3.0, 10.0, 10.0]
