@@ -13,6 +13,11 @@
 from __future__ import annotations
 
 import os
+
+# WSLg : le son passe par un serveur PulseAudio relié à Windows par RDP. Avec la latence par défaut,
+# ce pont craque même quand l'application lui fournit l'audio à temps. Un tampon PulseAudio plus
+# long supprime ces craquements (au prix de ~0,1 s de délai). Réglable : OMNIFR_LATENCE_PULSE_MS.
+os.environ.setdefault("PULSE_LATENCY_MSEC", os.environ.get("OMNIFR_LATENCE_PULSE_MS", "120"))
 import queue
 import subprocess
 import tarfile
@@ -392,7 +397,8 @@ def record_utterance(mic: Mic, vad: Vad, max_s: float = 60.0, end_silence: float
 def play(x: np.ndarray, sr: int, mic: Mic | None = None, vad: Vad | None = None, barge_in: bool = False) -> bool:
     """Joue l'audio. Renvoie False si l'utilisateur a coupé la parole."""
     import sounddevice as sd
-    sd.play(x, sr)
+    x, sr = _to_out(np.asarray(x, np.float32).reshape(-1), sr), OUT_SR
+    sd.play(x, sr, latency=OUT_LATENCY)
     if not (barge_in and mic and vad):
         sd.wait()
         return True
@@ -480,7 +486,7 @@ def _play_stream(sr: int, chunks, mic=None, vad=None, barge_in: bool = False, t0
         mic.drain()
         vad.reset()
     speech, total = 0.0, 0
-    with sd.OutputStream(samplerate=sr, channels=1, dtype="float32", latency="high") as out:
+    with sd.OutputStream(samplerate=OUT_SR, channels=1, dtype="float32", latency=OUT_LATENCY) as out:
         pauses = 0
         while True:
             if pending:
@@ -491,12 +497,13 @@ def _play_stream(sr: int, chunks, mic=None, vad=None, barge_in: bool = False, t0
                 except _q.Empty:
                     # génération en retard : on nourrit la carte son de silence (petite pause nette)
                     # plutôt que de la laisser à vide (craquement « underrun »)
-                    out.write(np.zeros((int(0.05 * sr), 1), np.float32))
+                    out.write(np.zeros((int(0.05 * OUT_SR), 1), np.float32))
                     pauses += 1
                     continue
             if c is None:
                 break
-            out.write(c.reshape(-1, 1))
+            # rééchantillonné vers la fréquence native de la sortie (48 kHz)
+            out.write(_to_out(c.reshape(-1), sr).reshape(-1, 1))
             total += len(c)
             if barge_in and mic and vad:
                 while not mic.q.empty():
@@ -509,12 +516,25 @@ def _play_stream(sr: int, chunks, mic=None, vad=None, barge_in: bool = False, t0
                         except Exception:
                             pass
                     return False
-    if verbose and t0 is not None:
+    if t0 is not None:
         m.update({"audio_s": round(total / sr, 2), "fin_s": round(time.time() - t0, 2),
                   "pauses_s": round(pauses * 0.05, 2)})
+    if verbose and t0 is not None:
         extra = f", {pauses * 0.05:.1f} s de pause par manque d'avance" if pauses else ""
         print(f"   [voix : {total / sr:.1f} s d'audio, fini {time.time() - t0:.1f} s après la demande{extra}]", flush=True)
     return True
+
+
+OUT_SR = int(os.environ.get("OMNIFR_SR_SORTIE", "48000"))     # fréquence native du serveur son WSLg
+OUT_LATENCY = float(os.environ.get("OMNIFR_LATENCE_SORTIE", "0.3"))
+
+
+def _to_out(x: np.ndarray, sr: int) -> np.ndarray:
+    """Rééchantillonne vers OUT_SR nous-mêmes : la conversion par le greffon ALSA->Pulse craque."""
+    if sr == OUT_SR or len(x) == 0:
+        return x.astype(np.float32, copy=False)
+    n = int(round(len(x) * OUT_SR / sr))
+    return np.interp(np.arange(n) * (sr / OUT_SR), np.arange(len(x)), x).astype(np.float32)
 
 
 class SpeechStream:
