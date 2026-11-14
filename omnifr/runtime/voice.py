@@ -243,7 +243,7 @@ class Qwen3TTS:
     """
 
     def __init__(self, mode: str = "expressif", size: str = "0.6B", voice_ref: Path | None = None,
-                 speaker: str = "", asr=None, port: int = 8095, log: Path | None = None):
+                 speaker: str = "", asr=None, port: int = 8095, log: Path | None = None, fidele: bool = False):
         import sys
         repo = Path(__file__).resolve().parents[2]
         py = repo / ".venv-voix" / "bin" / "python"
@@ -254,12 +254,21 @@ class Qwen3TTS:
         if mode == "clone":
             if not voice_ref:
                 raise ValueError("mode clone : donner --voix extrait.wav")
-            cmd += ["--voix", str(voice_ref)]
-            if asr is not None:      # la transcription de l'extrait améliore le clonage
+            # Mode rapide (défaut) : seule l'empreinte de la voix est utilisée, même vitesse que les voix
+            # prédéfinies. Mode fidèle (--clone-fidele) : l'extrait et sa transcription sont placés
+            # en contexte (ICL) ; plus ressemblant, mais chaque morceau décodé traîne l'extrait avec
+            # lui, d'où un débit ~3 fois plus faible. L'extrait est alors coupé à 6 s pour limiter ce coût.
+            ref = Path(voice_ref)
+            if fidele:
                 import soundfile as sf
                 from bench.eval_audio import resample
-                x, sr = sf.read(str(voice_ref), dtype="float32", always_2d=True)
-                cmd += ["--texte-voix", asr(resample(x.mean(1), sr))]
+                x, sr = sf.read(str(ref), dtype="float32", always_2d=True)
+                x = x.mean(1)[: int(6 * sr)]
+                ref = Path(tempfile.mkstemp(suffix=".wav")[1])
+                sf.write(str(ref), x, sr)
+                if asr is not None:
+                    cmd += ["--texte-voix", asr(resample(x, sr))]
+            cmd += ["--voix", str(ref)]
         elif speaker:
             cmd += ["--nom", speaker]
         self.port = port
@@ -320,13 +329,13 @@ class Qwen3TTS:
 
 
 def make_tts(root: Path, voice_ref: Path | None, gpu: bool, log: Path | None = None, engine: str = "qwen",
-             speaker: str = "", size: str = "0.6B", asr=None):
+             speaker: str = "", size: str = "0.6B", asr=None, fidele: bool = False):
     """Qwen3-TTS par défaut (expressif, ou clone si --voix-mode clone) ; ZONOS3 en repli."""
     if engine.startswith("qwen"):
         mode = "clone" if engine == "qwen-clone" else "expressif"
         try:
             return Qwen3TTS(mode, size, voice_ref, speaker, asr=asr,
-                            log=(log.parent / "qwen-tts.log") if log else None)
+                            log=(log.parent / "qwen-tts.log") if log else None, fidele=fidele)
         except Exception as e:
             print(f"Qwen3-TTS indisponible : {type(e).__name__}: {e}\n(journal complet : {log.parent / 'qwen-tts.log' if log else '?'})"
                   " ; repli sur ZONOS3", flush=True)
