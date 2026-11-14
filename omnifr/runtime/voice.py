@@ -283,19 +283,36 @@ class Qwen3TTS:
                 if line.startswith("voix disponibles"):
                     print(line, flush=True)
 
-    def synth(self, text: str, emotion: str = "neutre") -> tuple[np.ndarray, int]:
-        import io
+    def stream(self, text: str, emotion: str = "neutre"):
+        """Génère en flux : renvoie (sr, itérateur de morceaux float32) dès le premier morceau."""
         import json as _json
-        import soundfile as sf
         req = urllib.request.Request(f"http://127.0.0.1:{self.port}/tts",
                                      data=_json.dumps({"text": text, "emotion": emotion}).encode(),
                                      headers={"Content-Type": "application/json"})
         try:
-            with urllib.request.urlopen(req, timeout=300) as r:
-                x, sr = sf.read(io.BytesIO(r.read()), dtype="float32", always_2d=True)
+            r = urllib.request.urlopen(req, timeout=300)
         except urllib.error.HTTPError as e:
             raise RuntimeError(f"Qwen3-TTS : {e.read().decode('utf-8', 'replace')[:400]}") from None
-        return x.mean(1), sr
+        sr = int(r.headers["X-Sample-Rate"])
+
+        def chunks():
+            buf = b""
+            with r:
+                while True:
+                    data = r.read1(65536) if hasattr(r, "read1") else r.read(4096)
+                    if not data:
+                        break
+                    buf += data
+                    n = len(buf) // 4 * 4
+                    if n:
+                        yield np.frombuffer(buf[:n], dtype=np.float32)
+                        buf = buf[n:]
+        return sr, chunks()
+
+    def synth(self, text: str, emotion: str = "neutre") -> tuple[np.ndarray, int]:
+        sr, it = self.stream(text, emotion)
+        parts = list(it)
+        return (np.concatenate(parts) if parts else np.zeros(0, np.float32)), sr
 
     def close(self) -> None:
         self.proc.terminate()
@@ -382,15 +399,55 @@ def play(x: np.ndarray, sr: int, mic: Mic | None = None, vad: Vad | None = None,
     return True
 
 
+def _play_stream(sr: int, chunks, mic=None, vad=None, barge_in: bool = False, t0: float | None = None,
+                 verbose: bool = True) -> bool:
+    """Joue les morceaux au fil de leur arrivée. Renvoie False si l'utilisateur a coupé la parole."""
+    import sounddevice as sd
+    first, total = True, 0
+    if barge_in and mic and vad:
+        mic.drain()
+        vad.reset()
+    speech = 0.0
+    with sd.OutputStream(samplerate=sr, channels=1, dtype="float32") as out:
+        for c in chunks:
+            if first and verbose and t0 is not None:
+                print(f"   [voix : premier son après {time.time() - t0:.2f} s]", flush=True)
+                first = False
+            out.write(c.reshape(-1, 1))
+            total += len(c)
+            if barge_in and mic and vad:
+                while not mic.q.empty():
+                    f = mic.q.get_nowait()
+                    speech = speech + len(f) / SR if vad.speaking(f) else 0.0
+                if speech >= 0.3:
+                    if hasattr(chunks, "close"):
+                        chunks.close()
+                    return False
+    if verbose and t0 is not None:
+        print(f"   [voix : {total / sr:.1f} s d'audio, fini {time.time() - t0:.1f} s après la demande]", flush=True)
+    return True
+
+
 class Speaker:
     """Synthétise phrase par phrase en tâche de fond pour commencer à parler plus tôt."""
 
     def __init__(self, tts, verbose: bool = True):
         self.tts, self.verbose = tts, verbose
 
+    def _say_stream(self, text, emotion, mic, vad, barge_in) -> bool:
+        t0 = time.time()
+        try:
+            sr, it = self.tts.stream(text, emotion)
+        except Exception as e:
+            print(f"   ⚠ voix : {e}", flush=True)
+            return True
+        return _play_stream(sr, it, mic, vad, barge_in, t0=t0, verbose=self.verbose)
+
     def say(self, text: str, emotion: str, mic: Mic | None = None, vad: Vad | None = None,
             barge_in: bool = False) -> bool:
         import re
+        if hasattr(self.tts, "stream"):
+            return self._say_stream(re.sub(r"(\d)\.(\d)", r"\1,\2", text), emotion, mic, vad, barge_in)
         text = re.sub(r"(\d)\.(\d)", r"\1,\2", text)      # 15.4 -> 15,4 : lu « quinze virgule quatre »
         sentences = [s for s in re.split(r"(?<=[.!?…])\s+", text) if s.strip()] or [text]
         q: queue.Queue = queue.Queue(maxsize=2)

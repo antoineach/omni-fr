@@ -7,12 +7,15 @@ command -v sox >/dev/null || sudo apt-get install -y -q sox libsox-fmt-all
 python3 -m venv .venv-voix
 .venv-voix/bin/pip install -U pip wheel
 .venv-voix/bin/pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128
-.venv-voix/bin/pip install qwen-tts
+# faster-qwen3-tts : graphes CUDA + génération en flux (la bibliothèque officielle n'a pas de flux).
+# Il apporte qwen-tts-hf ; l'officiel qwen-tts ne doit pas cohabiter avec lui.
+.venv-voix/bin/pip uninstall -y qwen-tts 2>/dev/null || true
+.venv-voix/bin/pip install faster-qwen3-tts
 .venv-voix/bin/python - <<'PY'
 from huggingface_hub import snapshot_download
 for r in ("Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice", "Qwen/Qwen3-TTS-12Hz-0.6B-Base", "Qwen/Qwen3-TTS-Tokenizer-12Hz"):
     snapshot_download(r)
-import torch, qwen_tts
-print("qwen-tts", getattr(qwen_tts, "__version__", "?"), "| torch", torch.__version__, "| CUDA", torch.cuda.is_available())
+import torch, faster_qwen3_tts
+print("faster-qwen3-tts OK | torch", torch.__version__, "| CUDA", torch.cuda.is_available())
 PY
 echo "Voix prête : omnifr discuter --parler"
