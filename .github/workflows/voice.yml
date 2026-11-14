@@ -100,7 +100,7 @@ jobs:
           cmake -S codec.cpp -B codec.cpp/build -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DLLAMA_CURL=OFF -DGGML_CPU_ARM_ARCH=armv8.2-a+dotprod+i8mm
           cmake --build codec.cpp/build --config Release -j 4
           find codec.cpp/build -name tts-cli -type f
-          cp "$(find codec.cpp/build -name tts-cli -type f | head -1)" codec.cpp/build/tts-cli
+          [ -f codec.cpp/build/tts-cli ] || cp "$(find codec.cpp/build -name tts-cli -type f | head -1)" codec.cpp/build/tts-cli
       - name: ZONOS3-Mini, moteur ggml natif
         if: matrix.engine == 'zonos3-cpp'
         run: |
@@ -111,7 +111,7 @@ jobs:
           pip install "huggingface_hub[cli]"
           hf download Zyphra/ZONOS3-Mini --include 'gguf/*' --local-dir zonos3/servers/ggml
           ls -la zonos3/servers/ggml/gguf
-          "$(find zonos3/servers/ggml/build -name zonos3-cli -type f | head -1)" --help || true
+          true
       - name: Synthèse
         run: python bench/eval_tts.py --engine ${{ matrix.engine }} --out tts-wav --json eval-tts-${{ matrix.engine }}.json
       - uses: actions/upload-artifact@v4

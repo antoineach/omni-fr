@@ -137,18 +137,21 @@ class Zonos3Cpp:
         self.cli = str(next(root.glob("servers/ggml/build/**/zonos3-cli")))
         gg = sorted((root / "servers/ggml/gguf").glob("*.gguf"))
         print("GGUF :", [g.name for g in gg], flush=True)
-        self.model = str(next((g for g in gg if "ptq" in g.name), gg[0]))
+        self.model = str(next((g for g in gg if g.name == "backbone-ptq.gguf"),
+                              next((g for g in gg if "backbone" in g.name), gg[0])))
         ids = set()
         for g in gg:
             with open(g, "rb") as f:
                 head = f.read(64 << 20)
             ids |= {m.decode() for m in re.findall(rb"mood\.[a-z_]{2,30}", head)}
         print("contrôles mood trouvés :", sorted(ids), flush=True)
-        self.ctrl = {}
-        for emo, keys in self.WANT.items():
-            hit = next((i for k in keys for i in sorted(ids) if k in i), None)
-            if hit:
-                self.ctrl[emo] = hit
+        # ZONOS3 décrit l'émotion par axes (valence, activation, dominance, tempo) et non par noms :
+        # chaque émotion visée devient une combinaison de doses sur ces axes.
+        vad = {"calme": {"mood.valence": 0.5, "mood.arousal": -1.5, "mood.tempo": -0.5},
+               "joie": {"mood.valence": 1.5, "mood.arousal": 1.5},
+               "inquietude": {"mood.valence": -1.5, "mood.arousal": 1.0, "mood.dominance": -1.0},
+               "ironie": {"mood.valence": -0.5, "mood.dominance": 1.5, "mood.tempo": -0.5}}
+        self.ctrl = {e: {k: v for k, v in d.items() if k in ids} for e, d in vad.items()}
         print("association :", self.ctrl, flush=True)
         self.out = root / "z_tmp.wav"
 
@@ -157,15 +160,16 @@ class Zonos3Cpp:
             yield f"z3_{emo}", t, {"emo": emo, "dose": 1.0}
         yield "z3_joie_sans_controle", PHRASES[1][1], {}
         if "joie" in self.ctrl:
-            yield "z3_joie_dose2", PHRASES[1][1], {"emo": "joie", "dose": 2.0}
+            yield "z3_joie_dose_x0.5", PHRASES[1][1], {"emo": "joie", "dose": 0.5}
 
     def __call__(self, text: str, opts: dict) -> np.ndarray:
         cmd = [self.cli, self.model, "--tts", text, str(self.out), "--seed", "1", "--cpu", "--clone", self.ref]
-        if opts.get("emo") in self.ctrl:
-            cmd += ["--control", f"{self.ctrl[opts['emo']]}={opts['dose']}"]
+        for k, v in self.ctrl.get(opts.get("emo"), {}).items():
+            cmd += ["--control", f"{k}={v * opts.get('dose', 1.0)}"]
         r = self.sp.run(cmd, capture_output=True, text=True, cwd=self.root / "servers/ggml")
-        if r.returncode != 0:
-            raise RuntimeError((r.stdout + r.stderr)[-1500:])
+        if r.returncode != 0 or not self.out.exists():
+            lines = [x for x in (r.stdout + r.stderr).splitlines() if "repack" not in x]
+            raise RuntimeError(f"code {r.returncode} : " + "\n".join(lines[-25:]))
         import soundfile as sf
         x, self.sr = sf.read(str(self.out), dtype="float32", always_2d=True)
         return x.mean(1)
