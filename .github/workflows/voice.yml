@@ -96,7 +96,8 @@ jobs:
         if: matrix.engine == 'chatterbox-cpp'
         run: |
           git clone --depth 1 --recurse-submodules https://github.com/mybigday/codec.cpp
-          cmake -S codec.cpp -B codec.cpp/build -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=ON -DLLAMA_CURL=OFF
+          # GGML_NATIVE=OFF : le sous-projet llama.cpp se croit en compilation croisée et refuse try_run()
+          cmake -S codec.cpp -B codec.cpp/build -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DLLAMA_CURL=OFF -DGGML_CPU_ARM_ARCH=armv8.2-a+dotprod+i8mm
           cmake --build codec.cpp/build --config Release -j 4
           find codec.cpp/build -name tts-cli -type f
           cp "$(find codec.cpp/build -name tts-cli -type f | head -1)" codec.cpp/build/tts-cli
@@ -104,7 +105,7 @@ jobs:
         if: matrix.engine == 'zonos3-cpp'
         run: |
           git clone --depth 1 https://github.com/Zyphra/ZONOS3-Mini zonos3
-          git -C zonos3 submodule update --init --depth 1 servers/ggml/ggml
+          git -C zonos3 submodule update --init --depth 1 servers/ggml/ggml third_party/zyphra-textnorm third_party/fusealign-multilingual
           cmake -S zonos3/servers/ggml -B zonos3/servers/ggml/build -DCMAKE_BUILD_TYPE=Release
           cmake --build zonos3/servers/ggml/build -j 4
           pip install "huggingface_hub[cli]"

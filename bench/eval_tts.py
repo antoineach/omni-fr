@@ -173,14 +173,15 @@ class Zonos3Cpp:
 
 class Zonos:
     def __init__(self, ref: Path, repo: str):
+        import soundfile as sf
         import torch
-        import torchaudio
         torch.set_num_threads(4)
         from zonos.conditioning import make_cond_dict
         from zonos.model import Zonos as Z
         self.torch, self.make = torch, make_cond_dict
         self.m = Z.from_pretrained(repo, device="cpu")
-        wav, sr = torchaudio.load(str(ref))
+        x, sr = sf.read(str(ref), dtype="float32", always_2d=True)
+        wav = torch.from_numpy(x.T.copy())        # (canaux, échantillons), sans torchcodec
         self.spk = self.m.make_speaker_embedding(wav, sr)
         self.sr = self.m.autoencoder.sampling_rate
         params = inspect.signature(make_cond_dict).parameters
