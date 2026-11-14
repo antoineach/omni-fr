@@ -100,6 +100,8 @@ class ChatterboxCpp:
     def jobs(self):
         for emo, t in PHRASES:
             yield f"cpp_{emo}", t, {"exaggeration": CB_EXAG[emo]}
+        for emo, t in PHRASES[:2]:
+            yield f"cpp_{emo}_4pas", t, {"exaggeration": CB_EXAG[emo], "rapide": True}
         if self.exag:
             for e in CB_SWEEP:
                 yield f"cpp_balayage_joie_exag{e}", PHRASES[1][1], {"exaggeration": e}
@@ -108,7 +110,9 @@ class ChatterboxCpp:
         import unicodedata
         cmd = [self.bin, "synthesize", "--backbone", self.backbone, "--model", self.codec,
                "--text", "[fr]" + unicodedata.normalize("NFKD", text.lower()),
-               "--ref-audio", self.ref, "--output", str(self.out)]
+               "--ref-audio", self.ref, "--output", str(self.out), "--n-threads", "4"]
+        if opts.get("rapide"):
+            cmd += ["--override-kv", "chatterbox_s3g.flow.n_timesteps=int:4"]
         if self.exag:
             cmd += [self.exag, str(opts["exaggeration"])]
         r = self.sp.run(cmd, capture_output=True, text=True)
@@ -154,6 +158,21 @@ class Zonos3Cpp:
         self.ctrl = {e: {k: v for k, v in d.items() if k in ids} for e, d in vad.items()}
         print("association :", self.ctrl, flush=True)
         self.out = root / "z_tmp.wav"
+        self.extra = []
+        # Diagnostic : quelle option fait échouer le CLI ?
+        base = [self.cli, self.model, "--tts"]
+        tests = {"anglais": base + ["Hello, this is a test.", str(self.out), "--cpu"],
+                 "francais": base + ["Bonjour, ceci est un essai.", str(self.out), "--cpu"],
+                 "francais+clone": base + ["Bonjour, ceci est un essai.", str(self.out), "--cpu", "--clone", self.ref],
+                 "francais+mood": base + ["Bonjour, ceci est un essai.", str(self.out), "--cpu",
+                                          "--control", "mood.valence=1.0"]}
+        self.ok = {}
+        for k, cmd in tests.items():
+            r = subprocess.run(cmd, capture_output=True, text=True, cwd=root / "servers/ggml")
+            lines = [x for x in (r.stdout + r.stderr).splitlines() if "repack" not in x]
+            self.ok[k] = r.returncode == 0
+            print(f"diagnostic {k}: code {r.returncode}\n  " + "\n  ".join(lines[-12:]), flush=True)
+        self.use_clone = self.ok.get("francais+clone", False)
 
     def jobs(self):
         for emo, t in PHRASES:
@@ -163,7 +182,9 @@ class Zonos3Cpp:
             yield "z3_joie_dose_x0.5", PHRASES[1][1], {"emo": "joie", "dose": 0.5}
 
     def __call__(self, text: str, opts: dict) -> np.ndarray:
-        cmd = [self.cli, self.model, "--tts", text, str(self.out), "--seed", "1", "--cpu", "--clone", self.ref]
+        cmd = [self.cli, self.model, "--tts", text, str(self.out), "--seed", "1", "--cpu"]
+        if self.use_clone:
+            cmd += ["--clone", self.ref]
         for k, v in self.ctrl.get(opts.get("emo"), {}).items():
             cmd += ["--control", f"{k}={v * opts.get('dose', 1.0)}"]
         r = self.sp.run(cmd, capture_output=True, text=True, cwd=self.root / "servers/ggml")
