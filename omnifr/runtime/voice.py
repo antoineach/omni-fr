@@ -269,7 +269,8 @@ class Qwen3TTS:
         t0 = time.time()
         while time.time() - t0 < 600:
             if self.proc.poll() is not None:
-                tail = Path(self.log).read_text(errors="replace")[-1500:] if self.log.exists() else ""
+                lines = Path(self.log).read_text(errors="replace").splitlines() if self.log.exists() else []
+                tail = "\n".join(lines[-25:])
                 raise RuntimeError(f"serveur Qwen3-TTS arrêté :\n{tail}")
             try:
                 urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=2)
@@ -327,7 +328,8 @@ def make_tts(root: Path, voice_ref: Path | None, gpu: bool, log: Path | None = N
             return Qwen3TTS(mode, size, voice_ref, speaker, asr=asr,
                             log=(log.parent / "qwen-tts.log") if log else None)
         except Exception as e:
-            print(f"Qwen3-TTS indisponible ({type(e).__name__}: {str(e)[:200]}) ; repli sur ZONOS3", flush=True)
+            print(f"Qwen3-TTS indisponible : {type(e).__name__}: {e}\n(journal complet : {log.parent / 'qwen-tts.log' if log else '?'})"
+                  " ; repli sur ZONOS3", flush=True)
     try:
         return Zonos3Server(root, voice_ref, gpu, log=log)
     except Exception as e:
