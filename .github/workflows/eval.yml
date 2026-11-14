@@ -33,11 +33,11 @@ jobs:
           - {name: spark-x2.6-4b, repos: "XHToken/Spark-X2.6-4B-GGUF"}
           - {name: nemotron-bolt-e4b-gabarit-gemma, repos: "unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-GGUF nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-4GB", gabarit: "ggml-org/gemma-4-e4b-it-GGUF"}
           # Quantifications Unsloth « dynamiques » (UD) : précision contre vitesse, même modèle
-          - {name: nemotron-bolt-UD-IQ2_XXS, repos: "unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-GGUF", quant: "UD-IQ2_XXS"}
+          - {name: nemotron-bolt-UD-IQ2_M, repos: "unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-GGUF", quant: "UD-IQ2_M"}
+          - {name: nemotron-bolt-UD-IQ3_XXS, repos: "unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-GGUF", quant: "UD-IQ3_XXS"}
           - {name: nemotron-bolt-UD-Q2_K_XL, repos: "unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-GGUF", quant: "UD-Q2_K_XL"}
           - {name: nemotron-bolt-UD-Q3_K_XL, repos: "unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-GGUF", quant: "UD-Q3_K_XL"}
           - {name: nemotron-bolt-UD-Q4_K_XL, repos: "unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-GGUF", quant: "UD-Q4_K_XL"}
-          - {name: nemotron-bolt-Q4_0, repos: "unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-GGUF", quant: "Q4_0"}
           - {name: qwen3.5-4b-UD-IQ2_XXS, repos: "unsloth/Qwen3.5-4B-GGUF", quant: "UD-IQ2_XXS"}
           - {name: qwen3.5-4b-UD-Q3_K_XL, repos: "unsloth/Qwen3.5-4B-GGUF", quant: "UD-Q3_K_XL"}
           - {name: qwen3.5-4b, repos: "unsloth/Qwen3.5-4B-GGUF bartowski/Qwen_Qwen3.5-4B-GGUF Qwen/Qwen3.5-4B-GGUF"}
