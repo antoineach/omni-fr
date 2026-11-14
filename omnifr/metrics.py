@@ -8,13 +8,38 @@ import unicodedata
 _PUNCT = re.compile(r"[^\w\s'-]", re.UNICODE)
 
 
-def normalize_fr(text: str) -> str:
-    """Normalisation minimale pour le WER : minuscules, apostrophes unifiées, sans ponctuation.
+_NUM = re.compile(r"\d+(?:[.,]\d+)?")
 
-    Les nombres ne sont pas convertis en lettres : comparer des transcriptions produites par le
-    même ASR, ou normaliser les nombres en amont.
+
+def _numbers_to_words(t: str) -> str:
+    """« 30 % » -> « trente pour cent », « 21,5 » -> « vingt et un virgule cinq ».
+
+    Sans num2words installé, les chiffres restent tels quels.
     """
+    t = t.replace("%", " pour cent ").replace("°c", " degrés ").replace("°", " degrés ")
+    try:
+        from num2words import num2words
+    except ImportError:
+        return t
+
+    def conv(m: re.Match) -> str:
+        x = m.group(0).replace(",", ".")
+        try:
+            v = float(x) if "." in x else int(x)
+            return " " + num2words(v, lang="fr").replace("virgule zéro", "").strip() + " "
+        except Exception:
+            return m.group(0)
+    t = re.sub(r"(\d+)\s*h\s*(\d+)", r"\1 heures \2", t)
+    return _NUM.sub(conv, t)
+
+
+def normalize_fr(text: str, numbers: bool = True) -> str:
+    """Normalisation pour le WER : minuscules, apostrophes unifiées, traits d'union et
+    ponctuation retirés, nombres écrits en lettres (si num2words est installé)."""
     t = unicodedata.normalize("NFC", text).lower().replace("’", "'").replace("‘", "'")
+    if numbers:
+        t = _numbers_to_words(t)
+    t = t.replace("-", " ")
     t = _PUNCT.sub(" ", t)
     t = re.sub(r"(\w)'(\w)", r"\1' \2", t)
     return " ".join(t.split())

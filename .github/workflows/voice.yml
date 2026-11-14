@@ -1,0 +1,94 @@
+# Bancs vocaux sur runner Linux ARM (Neoverse N2, 4 cœurs, 16 Go), CPU seul.
+#   - stt : parakeet-v3 int8 (sherpa-onnx), Nemotron 3.5 ASR streaming, LFM3-Audio ; voix humaines MLS
+#           et phrases domotiques ; propre / brouhaha / bruit rose
+#   - tts : Chatterbox Multilingual et ZONOS3-Mini en français, avec émotions ; WAV en artefacts
+# llama.cpp figé et mis en cache (même clé que eval / bench-lfm3).
+
+name: voice
+
+on:
+  workflow_dispatch:
+    inputs:
+      stt:
+        type: boolean
+        default: true
+      tts:
+        type: boolean
+        default: true
+
+env:
+  LLAMA_CPP_COMMIT: 8ca5a80
+
+jobs:
+  stt:
+    if: ${{ inputs.stt }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Dépendances (PyTorch CPU seulement pour Nemotron)
+        run: |
+          pip install huggingface_hub numpy soundfile pyarrow num2words sherpa-onnx
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install "transformers>=5.13.0" accelerate || echo "transformers 5.13 indisponible"
+      - name: Cache de llama.cpp compilé
+        id: cache-llama
+        uses: actions/cache@v4
+        with:
+          path: llama.cpp/build/bin
+          key: llama-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.LLAMA_CPP_COMMIT }}
+      - name: Compilation de llama.cpp (seulement si absent du cache)
+        if: steps.cache-llama.outputs.cache-hit != 'true'
+        run: |
+          git clone --filter=blob:none https://github.com/ggml-org/llama.cpp
+          git -C llama.cpp checkout -q $LLAMA_CPP_COMMIT
+          cmake -S llama.cpp -B llama.cpp/build -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=ON -DLLAMA_CURL=OFF -DGGML_METAL=OFF -DBUILD_SHARED_LIBS=OFF
+          cmake --build llama.cpp/build --config Release -j 4
+      - name: Transcription
+        run: python bench/eval_stt.py --bin llama.cpp/build/bin --threads 4 --json eval-stt.json
+      - name: Journal du serveur (en cas d'échec)
+        if: failure()
+        run: tail -n 80 serveur-*.log || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eval-stt
+          path: eval-stt.json
+
+  tts:
+    if: ${{ inputs.tts }}
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [chatterbox, zonos]
+    runs-on: ubuntu-24.04-arm
+    name: tts ${{ matrix.engine }}
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Dépendances communes
+        run: pip install huggingface_hub numpy soundfile pyarrow num2words sherpa-onnx
+      - name: Chatterbox
+        if: matrix.engine == 'chatterbox'
+        run: pip install chatterbox-tts
+      - name: Zonos
+        if: matrix.engine == 'zonos'
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q espeak-ng
+          pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+          pip install git+https://github.com/Zyphra/Zonos.git
+      - name: Synthèse
+        run: python bench/eval_tts.py --engine ${{ matrix.engine }} --out tts-wav --json eval-tts-${{ matrix.engine }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tts-${{ matrix.engine }}
+          path: |
+            tts-wav/*.wav
+            eval-tts-*.json
