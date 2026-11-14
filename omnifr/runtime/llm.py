@@ -29,7 +29,9 @@ Entités de la maison (identifiant | nom | pièce) :
 
 
 def system_prompt(sim: HomeSimulator, emotion: bool = True) -> str:
-    return SYSTEM.format(emotion=RULES_EMOTION if emotion else "",
+    from .assistant_tools import RULES_EXTRA
+    extra = RULES_EXTRA if "temps.maintenant" in sim.tools else ""
+    return SYSTEM.format(emotion="\n".join(x for x in (RULES_EMOTION if emotion else "", extra) if x),
                          entities="\n".join(f"{e.entity_id} | {e.name} | {e.area}" for e in sim.entities.values()))
 
 

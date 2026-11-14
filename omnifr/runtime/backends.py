@@ -117,9 +117,26 @@ class RealBackend:
                 "temp_min": d["temperature_2m_min"][i], "temp_max": d["temperature_2m_max"][i],
                 "pluie_mm": d["precipitation_sum"][i], "vent_max_kmh": d["wind_speed_10m_max"][i]}
 
+    def _wikipedia(self, q: str) -> dict:
+        """Recherche sans clé ni serveur : Wikipédia en français (faits, dates, personnes, lieux)."""
+        api = "https://fr.wikipedia.org/w/api.php?"
+        h = {"User-Agent": "omni-fr/0.2 (assistant vocal local)"}
+        hits = _get(api + urllib.parse.urlencode({"action": "query", "list": "search", "srsearch": q, "srlimit": 3,
+                                                  "format": "json"}), h).get("query", {}).get("search", [])
+        if not hits:
+            return {"requete": q, "source": "Wikipédia", "extraits": []}
+        titles = "|".join(x["title"] for x in hits)
+        pages = _get(api + urllib.parse.urlencode({"action": "query", "prop": "extracts", "exintro": 1,
+                                                   "explaintext": 1, "exsentences": 4, "titles": titles,
+                                                   "format": "json", "redirects": 1}), h)["query"]["pages"]
+        order = {x["title"]: i for i, x in enumerate(hits)}
+        ex = sorted(pages.values(), key=lambda p: order.get(p.get("title"), 9))
+        return {"requete": q, "source": "Wikipédia",
+                "extraits": [f"{p.get('title')} : {p.get('extract', '')[:600]}" for p in ex if p.get("extract")]}
+
     def _web(self, a: dict) -> dict:
         if not self.searx_url:
-            raise ToolError("non_configure", "la recherche web n'est pas configurée sur cet appareil")
+            return self._wikipedia(a["requete"])
         r = _get(f"{self.searx_url}/search?" + urllib.parse.urlencode(
             {"q": a["requete"], "format": "json", "language": "fr"}), timeout=10)
         return {"requete": a["requete"], "extraits": [
@@ -134,6 +151,8 @@ class RealBackend:
                 payload = self._meteo(call.args)
             elif call.name == "web.recherche":
                 payload = self._web(call.args)
+            elif not call.name.startswith("maison."):
+                return self.sim.execute(call, confirmed)     # heure, minuteurs, calculs : exécutés localement
             else:
                 try:
                     payload = self._maison(call.name, call.args)

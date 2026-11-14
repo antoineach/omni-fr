@@ -351,15 +351,18 @@ def _brain(a, cfg):
                        log=home(a) / "llama-server.log")
 
 
-def _orchestrator(a, llm, on_wait=None):
+def _orchestrator(a, llm, on_wait=None, on_ring=None):
+    from omnifr.runtime.assistant_tools import Timers, register_extra
     from omnifr.runtime.backends import RealBackend, load_entities
     from omnifr.runtime.llm import build_tools, system_prompt
     from omnifr.runtime.orchestrator import Orchestrator
     from omnifr.sim.home import HomeSimulator
     sim = HomeSimulator(entities=load_entities(a.maison) if a.maison else None)
+    register_extra(sim, Timers(on_ring))          # heure, date, minuteurs, calculs
     backend = RealBackend(sim, ha_url=a.ha_url, searx_url=a.searx_url, alarm_code=os.environ.get("HA_ALARM_CODE", ""))
     mode = "Home Assistant" if (a.ha_url and backend.ha_token) else "maison simulée"
-    print(f"[{mode} ; météo Open-Meteo ; recherche web {'SearXNG' if a.searx_url else 'désactivée'}]")
+    print(f"[{mode} ; météo Open-Meteo ; recherche web {'SearXNG' if a.searx_url else 'Wikipédia'} ; "
+          "heure, minuteurs, calculs]")
     return Orchestrator(llm, backend, system_prompt(sim), build_tools(sim), on_wait=on_wait)
 
 
@@ -383,7 +386,12 @@ def cmd_discuter(a) -> None:
                                            engine=a.moteur_voix, speaker=a.voix_nom, size=a.taille_voix, asr=asr,
                                            fidele=a.clone_fidele, backend=a.voix_backend))
     with _brain(a, cfg) as llm:
-        orch = _orchestrator(a, llm, on_wait=lambda s: print(f"Jarvis : {s}"))
+        def ring(nom):
+            msg = f"Le minuteur {nom} est terminé !"
+            print(f"\n⏰ {msg}\nVous : ", end="", flush=True)
+            if spk:
+                spk.say(msg, "joie")
+        orch = _orchestrator(a, llm, on_wait=lambda s: print(f"Jarvis : {s}"), on_ring=ring)
         print("Écrivez vos demandes (vide pour quitter).")
         while True:
             try:
@@ -416,6 +424,52 @@ def cmd_discuter(a) -> None:
                 spk.say(r.text, r.emotion)
 
 
+MESURES = [
+    ("salut", "Bonjour Jarvis !"),
+    ("domotique", "Allume la cuisine et la chambre."),
+    ("heure", "Quelle heure est-il ?"),
+    ("minuteur", "Lance un minuteur de dix minutes pour les pâtes."),
+    ("calcul", "Combien font quinze pour cent de quatre-vingt-sept euros ?"),
+    ("meteo", "Quel temps fera-t-il demain à Bordeaux ?"),
+    ("web", "Quelle est la date de naissance de Victor Hugo ?"),
+    ("longue", "Explique-moi en trois phrases ce que tu sais faire."),
+]
+
+
+def cmd_mesurer(a) -> None:
+    """Chaque demande type : temps du cerveau, de la première phrase, du premier son, de la fin."""
+    cfg = load_cfg(a)
+    from omnifr.runtime import voice
+    ref = Path(a.voix) if a.voix else (Path(cfg["voix_reference"]) if cfg.get("voix_reference") else None)
+    spk = voice.Speaker(voice.make_tts(Path(cfg["zonos3"]), ref, gpu=not a.voix_cpu, log=home(a) / "zonos3.log",
+                                       engine=a.moteur_voix, speaker=a.voix_nom, size=a.taille_voix,
+                                       backend=a.voix_backend), verbose=False)
+    rows = []
+    with _brain(a, cfg) as llm:
+        orch = _orchestrator(a, llm, on_ring=lambda n: None)
+        orch.turn("Bonjour.")                       # chauffe : contexte système mis en cache
+        for name, u in MESURES:
+            stream = spk.open()
+            t0 = time.time()
+            stream.t0 = t0
+            r = orch.turn(u, on_sentence=stream.add if stream else None)
+            t_brain = time.time() - t0
+            if stream:
+                for sent in _unsaid(r):
+                    stream.add(sent, r.emotion)
+                stream.finish()
+            m = stream.metrics if stream else {}
+            outils = ", ".join(x["appel"]["name"] for x in r.actions) or "-"
+            rows.append({"demande": name, "outils": outils, "cerveau_s": round(t_brain, 2), **m, "reponse": r.text})
+            print(f"{name:<10} cerveau {t_brain:4.1f} s | 1re phrase {m.get('premiere_phrase_s', '-')} s | "
+                  f"1er son {m.get('lecture_s', '-')} s | fin {m.get('fin_s', '-')} s | pauses {m.get('pauses_s', 0)} s"
+                  f" | {outils}\n           « {r.text} »", flush=True)
+    out = home(a) / "mesures.json"
+    out.write_text(json.dumps({"gpu": gpu(), "moteur_voix": a.moteur_voix, "lignes": rows}, ensure_ascii=False, indent=2))
+    med = sorted(x.get("lecture_s", 99) for x in rows)[len(rows) // 2]
+    print(f"\nMédiane jusqu'au premier son : {med} s. Détail : {out}")
+
+
 def cmd_assistant(a) -> None:
     cfg = load_cfg(a)
     from omnifr.runtime import voice
@@ -430,8 +484,11 @@ def cmd_assistant(a) -> None:
     with _brain(a, cfg) as llm:
         mic = voice.Mic(device=a.micro)
         cur: dict = {"stream": None}      # phrase d'attente (« Je regarde. ») dans le flux en cours s'il existe
+        def ring(nom):
+            print(f"⏰ minuteur {nom} terminé", flush=True)
+            spk.say(f"Le minuteur {nom} est terminé !", "joie")
         orch = _orchestrator(a, llm, on_wait=lambda s: cur["stream"].add(s, "neutre") if cur["stream"]
-                             else spk.say(s, "neutre"))
+                             else spk.say(s, "neutre"), on_ring=ring)
         print("Dites « Hey Jarvis »." if not a.sans_eveil else "Parlez quand vous voulez.", flush=True)
         follow_up = False
         while True:
@@ -548,6 +605,19 @@ def main(argv: list[str] | None = None) -> None:
         p.add_argument("--ha-url", default=os.environ.get("HA_URL", ""), help="ex. http://homeassistant.local:8123 (+ HA_TOKEN)")
         p.add_argument("--searx-url", default=os.environ.get("SEARX_URL", ""), help="instance SearXNG pour web.recherche")
 
+    def voice_opts(p):
+        p.add_argument("--voix", default="", help="extrait WAV de 5 à 15 s de la voix à cloner (avec consentement)")
+        p.add_argument("--voix-cpu", action="store_true", help="ZONOS3 sur le processeur (libère la VRAM)")
+        p.add_argument("--moteur-voix", choices=["qwen", "qwen-clone", "zonos3"], default="qwen",
+                       help="qwen : Qwen3-TTS expressif (voix prédéfinie, émotions) ; qwen-clone : votre voix (--voix), "
+                            "sans contrôle d'émotion ; zonos3 : ancien moteur")
+        p.add_argument("--voix-nom", default="", help="voix prédéfinie Qwen3-TTS (liste affichée au chargement)")
+        p.add_argument("--taille-voix", choices=["0.6B", "1.7B"], default="0.6B", help="1.7B : meilleur, ~4 Go de VRAM")
+        p.add_argument("--voix-backend", choices=["torch", "ggml"], default="torch",
+                       help="ggml : moteur C++ qwentts.cpp au lieu de PyTorch + graphes CUDA (expérimental)")
+        p.add_argument("--clone-fidele", action="store_true",
+                       help="clonage avec l'extrait en contexte : plus ressemblant, ~3 fois plus lent")
+
     p = sub.add_parser("telecharger", help="tout télécharger d'avance (enseignant, base d'affinage, bancs, voix)")
     p.set_defaults(f=cmd_telecharger)
 
@@ -558,35 +628,20 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--micro", default=None)
     p.set_defaults(f=cmd_tester)
 
+    p = sub.add_parser("mesurer", help="mesurer les temps de réponse sur des demandes types (avec la voix)")
+    runtime_opts(p)
+    voice_opts(p)
+    p.set_defaults(f=cmd_mesurer)
+
     p = sub.add_parser("discuter", help="l'assistant au clavier")
     runtime_opts(p)
     p.add_argument("--parler", action="store_true", help="lire les réponses à voix haute (ZONOS3)")
-    p.add_argument("--voix", default="", help="extrait WAV de la voix à cloner")
-    p.add_argument("--voix-cpu", action="store_true", help="ZONOS3 sur le processeur (libère la VRAM)")
-    p.add_argument("--moteur-voix", choices=["qwen", "qwen-clone", "zonos3"], default="qwen",
-                   help="qwen : Qwen3-TTS expressif (voix prédéfinie, émotions) ; qwen-clone : votre voix (--voix), "
-                        "sans contrôle d'émotion ; zonos3 : ancien moteur")
-    p.add_argument("--voix-nom", default="", help="voix prédéfinie Qwen3-TTS (liste affichée au chargement)")
-    p.add_argument("--taille-voix", choices=["0.6B", "1.7B"], default="0.6B", help="1.7B : meilleur, ~4 Go de VRAM")
-    p.add_argument("--voix-backend", choices=["torch", "ggml"], default="torch",
-                   help="ggml : moteur C++ qwentts.cpp au lieu de PyTorch + graphes CUDA (expérimental)")
-    p.add_argument("--clone-fidele", action="store_true",
-                   help="clonage avec l'extrait en contexte : plus ressemblant, ~3 fois plus lent")
+    voice_opts(p)
     p.set_defaults(f=cmd_discuter)
 
     p = sub.add_parser("assistant", help="l'assistant à la voix")
     runtime_opts(p)
-    p.add_argument("--voix", default="", help="extrait WAV de 5 à 10 s de la voix à cloner (avec consentement)")
-    p.add_argument("--voix-cpu", action="store_true", help="ZONOS3 sur le processeur (libère la VRAM)")
-    p.add_argument("--moteur-voix", choices=["qwen", "qwen-clone", "zonos3"], default="qwen",
-                   help="qwen : Qwen3-TTS expressif (voix prédéfinie, émotions) ; qwen-clone : votre voix (--voix), "
-                        "sans contrôle d'émotion ; zonos3 : ancien moteur")
-    p.add_argument("--voix-nom", default="", help="voix prédéfinie Qwen3-TTS (liste affichée au chargement)")
-    p.add_argument("--taille-voix", choices=["0.6B", "1.7B"], default="0.6B", help="1.7B : meilleur, ~4 Go de VRAM")
-    p.add_argument("--voix-backend", choices=["torch", "ggml"], default="torch",
-                   help="ggml : moteur C++ qwentts.cpp au lieu de PyTorch + graphes CUDA (expérimental)")
-    p.add_argument("--clone-fidele", action="store_true",
-                   help="clonage avec l'extrait en contexte : plus ressemblant, ~3 fois plus lent")
+    voice_opts(p)
     p.add_argument("--micro", default=None, help="périphérique d'entrée (nom ou numéro sounddevice)")
     p.add_argument("--seuil", type=float, default=0.5, help="seuil du mot d'éveil")
     p.add_argument("--sans-eveil", action="store_true", help="écoute en continu, sans « Hey Jarvis »")

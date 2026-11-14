@@ -413,7 +413,7 @@ def play(x: np.ndarray, sr: int, mic: Mic | None = None, vad: Vad | None = None,
 
 
 def _play_stream(sr: int, chunks, mic=None, vad=None, barge_in: bool = False, t0: float | None = None,
-                 verbose: bool = True, text: str = "") -> bool:
+                 verbose: bool = True, text: str = "", metrics: dict | None = None) -> bool:
     """Joue les morceaux au fil de leur arrivée, avec un tampon adaptatif.
 
     Si la génération va à peine plus vite que la parole (cas de la 2070, facteur ~1), lire chaque
@@ -442,6 +442,9 @@ def _play_stream(sr: int, chunks, mic=None, vad=None, barge_in: bool = False, t0
     first = buf.get()
     if first is None:
         return True
+    m = metrics if metrics is not None else {}
+    if t0 is not None:
+        m["premier_son_genere_s"] = round(time.time() - t0, 2)
     if verbose and t0 is not None:
         print(f"   [voix : premier son généré après {time.time() - t0:.2f} s]", flush=True)
     pending = [first]
@@ -468,6 +471,8 @@ def _play_stream(sr: int, chunks, mic=None, vad=None, barge_in: bool = False, t0
         if c is None:
             break
         pending.append(c)
+    if t0 is not None:
+        m["lecture_s"] = round(time.time() - t0, 2)
     if verbose and t0 is not None:
         print(f"   [voix : lecture après {time.time() - t0:.2f} s, {stats['gen'] / sr:.1f} s d'avance]", flush=True)
 
@@ -505,6 +510,8 @@ def _play_stream(sr: int, chunks, mic=None, vad=None, barge_in: bool = False, t0
                             pass
                     return False
     if verbose and t0 is not None:
+        m.update({"audio_s": round(total / sr, 2), "fin_s": round(time.time() - t0, 2),
+                  "pauses_s": round(pauses * 0.05, 2)})
         extra = f", {pauses * 0.05:.1f} s de pause par manque d'avance" if pauses else ""
         print(f"   [voix : {total / sr:.1f} s d'audio, fini {time.time() - t0:.1f} s après la demande{extra}]", flush=True)
     return True
@@ -530,6 +537,7 @@ class SpeechStream:
         self.sr: int | None = None
         self.sr_ready = threading.Event()
         self.result = True
+        self.metrics: dict = {}
         self.cancel = threading.Event()
         self.gen = threading.Thread(target=self._generate, daemon=True)
         self.player = threading.Thread(target=self._play, daemon=True)
@@ -540,6 +548,7 @@ class SpeechStream:
         import re
         sentence = re.sub(r"(\d)\.(\d)", r"\1,\2", sentence)
         self.text += " " + sentence
+        self.metrics.setdefault("premiere_phrase_s", round(time.time() - self.t0, 2))
         if self.verbose:
             print(f"   [cerveau : phrase prête après {time.time() - self.t0:.2f} s] {sentence}", flush=True)
         self.sentences.put((sentence, emotion))
@@ -576,7 +585,7 @@ class SpeechStream:
             return
         # longueur estimée : texte connu au moment du démarrage (le reste arrive pendant la lecture)
         self.result = _play_stream(self.sr, self._chunks(), self.mic, self.vad, self.barge_in, t0=self.t0,
-                                   verbose=self.verbose, text=self.text)
+                                   verbose=self.verbose, text=self.text, metrics=self.metrics)
         if not self.result:
             self.cancel.set()
 
